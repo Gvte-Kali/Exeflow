@@ -7,7 +7,7 @@
 
 set -e
 
-EXEFLOW_URL="https://raw.githubusercontent.com/VOTRE_USER/VOTRE_REPO/main/exeflow.py"
+EXEFLOW_URL="https://raw.githubusercontent.com/Gvte-Kali/Exeflow/refs/heads/main/exeflow.py"
 INSTALL_DIR="/opt/exeflow"
 BIN_LINK="/usr/local/bin/exeflow"
 
