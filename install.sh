@@ -46,6 +46,26 @@ detect_pkg_manager() {
     fi
 }
 
+PKG_MANAGER=$(detect_pkg_manager)
+ok "Package manager detected: ${PKG_MANAGER}"
+
+# ─────────────────────────────────────────────
+#  UPDATE PACKAGE INDEX (once, before installs)
+# ─────────────────────────────────────────────
+
+pkg_update() {
+    info "Updating package index..."
+    case "$PKG_MANAGER" in
+        apt)    apt-get update -qq                  ;;
+        pacman) pacman -Sy --noconfirm              ;;
+        dnf)    dnf check-update -q || true         ;;  # dnf returns 100 if updates available, not an error
+        zypper) zypper refresh -q                   ;;
+        apk)    apk update -q                       ;;
+        *)      warn "Cannot update — unknown package manager." ;;
+    esac
+    ok "Package index updated"
+}
+
 # Install a package using the detected package manager
 # Usage: pkg_install <pkg_apt> <pkg_pacman> <pkg_dnf> <pkg_zypper> <pkg_apk>
 pkg_install() {
@@ -56,17 +76,17 @@ pkg_install() {
     local pkg_apk="$5"
 
     case "$PKG_MANAGER" in
-        apt)     apt-get install -y "$pkg_apt"    ;;
+        apt)     apt-get install -y "$pkg_apt"       ;;
         pacman)  pacman -S --noconfirm "$pkg_pacman" ;;
-        dnf)     dnf install -y "$pkg_dnf"        ;;
-        zypper)  zypper install -y "$pkg_zypper"  ;;
-        apk)     apk add --no-cache "$pkg_apk"    ;;
+        dnf)     dnf install -y "$pkg_dnf"           ;;
+        zypper)  zypper install -y "$pkg_zypper"     ;;
+        apk)     apk add --no-cache "$pkg_apk"       ;;
         *)       err "Unsupported package manager. Install manually: $pkg_apt / $pkg_pacman / $pkg_dnf" ;;
     esac
 }
 
-PKG_MANAGER=$(detect_pkg_manager)
-ok "Package manager detected: ${PKG_MANAGER}"
+# Run update once upfront so all subsequent installs work with a fresh index
+pkg_update
 
 # ─────────────────────────────────────────────
 #  DEPENDENCY: python3
