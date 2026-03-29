@@ -23,15 +23,7 @@ The idea: stop retyping the same nmap/gobuster/ffuf commands on every engagement
 ### One-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/install.sh | sudo bash
-```
-
-### Manual
-
-```bash
-git clone https://github.com/YOUR_USER/YOUR_REPO.git
-cd YOUR_REPO
-sudo bash install.sh
+curl -fsSL https://raw.githubusercontent.com/Gvte-Kali/Exeflow/refs/heads/main/install.sh | sudo bash
 ```
 
 The installer automatically detects your package manager and installs any missing dependencies (`python3`, `python3-tk`, `curl`).
