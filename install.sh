@@ -103,7 +103,7 @@ fi
 #  DEPENDENCY: python3-tk
 # ─────────────────────────────────────────────
 
-if ! python3 -c "import tkinter" 2>/dev/null; then
+if ! /usr/bin/python3 -c "import tkinter" 2>/dev/null && ! python3 -c "import tkinter" 2>/dev/null; then
     info "python3-tk not found — installing..."
     pkg_install \
         "python3-tk" \
@@ -153,13 +153,45 @@ info "Installing launcher at ${BIN_LINK}..."
 cat > "${BIN_LINK}" << 'EOF'
 #!/usr/bin/env bash
 # ExeFlow launcher — runs detached, returns shell immediately
+
+# Inherit display from environment or try common defaults
+if [[ -z "$DISPLAY" && -z "$WAYLAND_DISPLAY" ]]; then
+    # Try common fallback displays before giving up
+    for d in :0 :1 :10; do
+        if DISPLAY="$d" python3 -c "import tkinter; tkinter.Tk().destroy()" 2>/dev/null; then
+            export DISPLAY="$d"
+            break
+        fi
+    done
+fi
+
 if [[ -z "$DISPLAY" && -z "$WAYLAND_DISPLAY" ]]; then
     echo "[exeflow] No display detected. Make sure you are in a graphical session."
+    echo "[exeflow] Try: export DISPLAY=:0 && exeflow"
     exit 1
 fi
-nohup python3 /opt/exeflow/exeflow.py "$@" > /tmp/exeflow.log 2>&1 &
+
+export DISPLAY="${DISPLAY:-:0}"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+
+# Prefer system python3 over pyenv to ensure tkinter is available
+PYTHON_BIN=""
+for candidate in /usr/bin/python3 /usr/local/bin/python3 "$(command -v python3)"; do
+    if [[ -x "$candidate" ]] && "$candidate" -c "import tkinter" 2>/dev/null; then
+        PYTHON_BIN="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$PYTHON_BIN" ]]; then
+    echo "[exeflow] No python3 with tkinter support found."
+    echo "[exeflow] If using pyenv, install tkinter support or use system python3."
+    exit 1
+fi
+
+nohup "$PYTHON_BIN" /opt/exeflow/exeflow.py "$@" > /tmp/exeflow.log 2>&1 &
 disown
-echo "[exeflow] Started (PID $!). Logs: /tmp/exeflow.log"
+echo "[exeflow] Started (PID $!) using $PYTHON_BIN. DISPLAY=$DISPLAY — Logs: /tmp/exeflow.log"
 EOF
 
 chmod 755 "${BIN_LINK}"
