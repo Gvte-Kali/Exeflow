@@ -2,6 +2,13 @@
 
 > **Pentest Command Orchestrator** — Define your variables, build your command sequences, share your workflows. Designed to integrate natively with [Exegol](https://github.com/ThePorgs/Exegol).
 
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python)
+![Platform](https://img.shields.io/badge/Platform-Linux-informational?style=flat-square&logo=linux)
+![GUI](https://img.shields.io/badge/GUI-Tkinter-green?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square)
+
+---
+
 ## In a nutshell
 
 ExeFlow is a GUI tool that lets you:
@@ -18,12 +25,37 @@ The idea: stop retyping the same nmap/gobuster/ffuf commands on every engagement
 
 ---
 
+## Table of contents
+
+- [Installation](#installation)
+- [Launch](#launch)
+- [Interface](#interface)
+  - [Top bar](#top-bar)
+  - [Variables panel](#variables-panel)
+  - [Commands panel](#commands-panel)
+  - [Output panel](#output-panel)
+- [Variable system](#variable-system)
+- [Playbook format](#playbook-format)
+- [Exegol integration](#exegol-integration)
+- [Sharing playbooks](#sharing-playbooks)
+- [Requirements](#requirements)
+
+---
+
 ## Installation
 
 ### One-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Gvte-Kali/Exeflow/refs/heads/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/install.sh | sudo bash
+```
+
+### Manual
+
+```bash
+git clone https://github.com/YOUR_USER/YOUR_REPO.git
+cd YOUR_REPO
+sudo bash install.sh
 ```
 
 The installer automatically detects your package manager and installs any missing dependencies (`python3`, `python3-tk`, `curl`).
@@ -43,30 +75,18 @@ The installer automatically detects your package manager and installs any missin
 ```bash
 exeflow
 ```
+
+ExeFlow launches detached from the shell — **you get your prompt back immediately**. Logs are written to `/tmp/exeflow.log` if anything goes wrong.
+
+---
+
 ## Uninstall
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Gvte-Kali/Exeflow/refs/heads/main/uninstall.sh | sudo bash
 ```
 
-## Table of contents
-
-
-- [Interface](#interface)
-  - [Top bar](#top-bar)
-  - [Variables panel](#variables-panel)
-  - [Commands panel](#commands-panel)
-  - [Output panel](#output-panel)
-- [Variable system](#variable-system)
-- [Playbook format](#playbook-format)
-- [Exegol integration](#exegol-integration)
-- [Sharing playbooks](#sharing-playbooks)
-- [Requirements](#requirements)
-
----
-
-
-ExeFlow launches detached from the shell — **you get your prompt back immediately**. Logs are written to `/tmp/exeflow.log` if anything goes wrong.
+Removes `/opt/exeflow/` and `/usr/local/bin/exeflow` only — dependencies (`python3`, `python3-tk`) are left untouched.
 
 ---
 
@@ -221,6 +241,18 @@ Exegol automatically mounts `~/.exegol/my-resources/` into every container. Stor
 ```
 
 On first launch, click `📁 Playbooks Folder` and navigate to `~/.exegol/my-resources/playbooks/`. ExeFlow will use that directory for all imports and exports from that point on.
+
+### Auto-install in all future containers
+
+Exegol executes `~/.exegol/my-resources/setup/load_user_setup.sh` automatically every time a new container is created. Adding the ExeFlow installer there means **every future container gets ExeFlow without any manual steps**.
+
+Run this one-liner on your host to register ExeFlow in that setup script:
+
+```bash
+mkdir -p ~/.exegol/my-resources/setup && echo -e "\n# Install ExeFlow — Pentest Command Orchestrator\ncurl -fsSL https://raw.githubusercontent.com/Gvte-Kali/Exeflow/refs/heads/main/install.sh | sudo bash" >> ~/.exegol/my-resources/setup/load_user_setup.sh
+```
+
+After that, every new Exegol container will have `exeflow` available as a command from the first launch.
 
 ### Desktop shortcut (optional)
 
