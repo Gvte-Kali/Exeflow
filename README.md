@@ -43,6 +43,11 @@ The installer automatically detects your package manager and installs any missin
 ```bash
 exeflow
 ```
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Gvte-Kali/Exeflow/refs/heads/main/uninstall.sh | sudo bash
+```
 
 ## Table of contents
 
