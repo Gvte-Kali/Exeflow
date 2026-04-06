@@ -19,99 +19,6 @@ from datetime import datetime
 PLAYBOOKS_DIR = None
 
 # ──────────────────────────────────────────────
-#  FULL PATH — robust multi-strategy PATH resolution for Exegol and other distros
-# ──────────────────────────────────────────────
-def _get_full_env():
-    """
-    Build the most complete PATH possible by combining:
-    1. Current environment PATH
-    2. Login shell PATH  (bash -lc / zsh -lc)
-    3. Interactive shell PATH  (bash -ilc)
-    4. Well-known bin directories (Exegol, rvm, gem, pipx, cargo, go, pyenv...)
-    All deduplicated, non-existent dirs filtered out.
-    """
-    env = os.environ.copy()
-    collected = env.get("PATH", "").split(":")
-
-    # Strategy 1 & 2: try multiple shell invocations
-    shell_cmds = [
-        ["bash", "--login",      "-c", "echo $PATH"],
-        ["bash", "--login", "-i", "-c", "echo $PATH"],
-        ["zsh",  "--login",      "-c", "echo $PATH"],
-        ["sh",   "-lc",                "echo $PATH"],
-    ]
-    for cmd in shell_cmds:
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            for p in r.stdout.strip().split(":"):
-                if p and p not in collected:
-                    collected.append(p)
-        except Exception:
-            continue
-
-    # Strategy 3: hardcoded well-known paths that Exegol/tools use
-    home = os.path.expanduser("~")
-    known = [
-        # System
-        "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
-        # Exegol specific
-        "/opt/tools/bin",
-        "/opt/tools",
-        "/root/go/bin",
-        # Ruby / RVM / Gems (wpscan lives here)
-        "/usr/local/rvm/bin",
-        "/usr/local/rvm/rubies/default/bin",
-        "/usr/local/rvm/gems/default/bin",
-        "/usr/local/rvm/gems/default@global/bin",
-        f"{home}/.rvm/bin",
-        f"{home}/.rvm/rubies/default/bin",
-        f"{home}/.rvm/gems/default/bin",
-        # RVM dynamic — scan ALL gem sets and ruby versions (covers wpscan, etc.)
-        *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/gems").glob("*/bin")]
-          if __import__('pathlib').Path("/usr/local/rvm/gems").exists() else []),
-        *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/gems").glob("*/wrappers")]
-          if __import__('pathlib').Path("/usr/local/rvm/gems").exists() else []),
-        *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/rubies").glob("*/bin")]
-          if __import__('pathlib').Path("/usr/local/rvm/rubies").exists() else []),
-        # Python tools
-        f"{home}/.local/bin",
-        "/usr/local/bin",
-        f"{home}/.pyenv/shims",
-        f"{home}/.pyenv/bin",
-        # Node / npm
-        f"{home}/.npm-global/bin",
-        "/usr/local/lib/nodejs/bin",
-        # Go
-        "/usr/local/go/bin",
-        f"{home}/go/bin",
-        # Cargo / Rust
-        f"{home}/.cargo/bin",
-        # Snap
-        "/snap/bin",
-        # pipx
-        f"{home}/.local/pipx/venvs",
-    ]
-    for p in known:
-        if p and p not in collected:
-            collected.append(p)
-
-    # Filter to only existing directories, keep order
-    filtered = [p for p in collected if p and os.path.isdir(p)]
-    # Deduplicate preserving order
-    seen = set()
-    deduped = []
-    for p in filtered:
-        rp = os.path.realpath(p)
-        if rp not in seen:
-            seen.add(rp)
-            deduped.append(p)
-
-    env["PATH"] = ":".join(deduped)
-    return env
-
-FULL_ENV = _get_full_env()
-
-# ──────────────────────────────────────────────
 #  THEME
 # ──────────────────────────────────────────────
 BG        = "#0d0f0e"
@@ -905,8 +812,26 @@ class ExeFlow(tk.Tk):
             f"┌─ {label} ─────────────────────────────", "header"))
         self.after(0, lambda: log(f"$ {cmd}", "warn"))
         try:
+            # Run via plain bash (no --login, no -i) to avoid:
+            # - job control errors (no TTY)
+            # - /opt/.exegol_aliases syntax error triggered by --login
+            # RVM and wrappers are sourced manually and safely.
+            wrapper = (
+                # RVM: add to PATH and source scripts
+                'export PATH="/usr/local/rvm/bin:$PATH"; '
+                '[ -s /usr/local/rvm/scripts/rvm ] && source /usr/local/rvm/scripts/rvm 2>/dev/null; '
+                # Activate all gem wrappers by scanning rvm gems dirs
+                'for d in /usr/local/rvm/gems/*/wrappers; do export PATH="$d:$PATH"; done; '
+                'for d in /usr/local/rvm/gems/*/bin; do export PATH="$d:$PATH"; done; '
+                'for d in /usr/local/rvm/rubies/*/bin; do export PATH="$d:$PATH"; done; '
+                # Standard system paths
+                'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"; '
+                # Exegol tools
+                'export PATH="/opt/tools/bin:/opt/tools:$PATH"; '
+                f'{cmd}'
+            )
             proc = subprocess.Popen(
-                ["bash", "--login", "-i", "-c", cmd],
+                ["bash", "-c", wrapper],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1
             )
