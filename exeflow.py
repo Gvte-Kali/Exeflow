@@ -66,8 +66,10 @@ def _get_full_env():
         f"{home}/.rvm/bin",
         f"{home}/.rvm/rubies/default/bin",
         f"{home}/.rvm/gems/default/bin",
-        # RVM dynamic — scan for any ruby version installed
+        # RVM dynamic — scan ALL gem sets and ruby versions (covers wpscan, etc.)
         *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/gems").glob("*/bin")]
+          if __import__('pathlib').Path("/usr/local/rvm/gems").exists() else []),
+        *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/gems").glob("*/wrappers")]
           if __import__('pathlib').Path("/usr/local/rvm/gems").exists() else []),
         *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/rubies").glob("*/bin")]
           if __import__('pathlib').Path("/usr/local/rvm/rubies").exists() else []),
@@ -604,7 +606,7 @@ class ExeFlow(tk.Tk):
     # ── CHECKBOX INTERACTIONS ────────────────
 
     def _on_cmd_click(self, event):
-        """Toggle checkbox on click anywhere on a row."""
+        """Toggle checkbox on click. If parallel running, also switch output view."""
         region = self.cmd_tree.identify_region(event.x, event.y)
         if region not in ("cell", "tree"):
             return
@@ -612,6 +614,16 @@ class ExeFlow(tk.Tk):
         if not iid:
             return
         idx = int(iid)
+
+        # If parallel mode is active, clicking switches the output view
+        if hasattr(self, "_parallel_buffers") and self._running:
+            label = self.playbook.commands[idx].label
+            if label in self._parallel_buffers:
+                self._parallel_active_label = label
+                self._refresh_parallel_output()
+                self.status_var.set(f"viewing: {label}")
+                return
+
         self._checked[idx] = not self._checked.get(idx, False)
         self._update_cmd_row(idx)
 
@@ -840,12 +852,27 @@ class ExeFlow(tk.Tk):
             return
         self._running        = True
         self._stop_requested = False
+
+        # Per-command output buffer  {label: [(text, tag), ...]}
+        self._parallel_buffers: dict[str, list] = {label: [] for label, _ in commands}
+        self._parallel_labels: list[str]         = [label for label, _ in commands]
+        self._parallel_active_label: str | None  = self._parallel_labels[0] if commands else None
+
+        self.after(0, self._refresh_parallel_output)
         self.after(0, lambda: self.status_var.set(f"running parallel ({len(commands)} cmds)"))
+
+        def buf_log(label, text, tag="stdout"):
+            self._parallel_buffers[label].append((text, tag))
+            # Refresh display if this label is currently selected
+            if self._parallel_active_label == label:
+                self.after(0, self._refresh_parallel_output)
 
         def run():
             threads = []
             for label, cmd in commands:
-                t = threading.Thread(target=self._run_single, args=(label, cmd), daemon=True)
+                log_fn = lambda t, tg="stdout", l=label: buf_log(l, t, tg)
+                t = threading.Thread(target=self._run_single,
+                                     args=(label, cmd, log_fn), daemon=True)
                 threads.append(t)
                 t.start()
             for t in threads:
@@ -855,31 +882,47 @@ class ExeFlow(tk.Tk):
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _run_single(self, label: str, cmd: str):
-        """Run one command and stream output. Called from worker threads."""
-        self.after(0, lambda: self._log(
+    def _refresh_parallel_output(self):
+        """Redraw the output terminal with the buffer of the currently selected parallel command."""
+        label = getattr(self, "_parallel_active_label", None)
+        if label is None:
+            return
+        buf = self._parallel_buffers.get(label, [])
+        self.output.config(state="normal")
+        self.output.delete("1.0", "end")
+        for text, tag in buf:
+            if self.timestamp_var.get() and tag in ("header", "warn", "error"):
+                self.output.insert("end", f"[{get_timestamp()}] ", "dim")
+            self.output.insert("end", text + "\n", tag)
+        self.output.config(state="disabled")
+        if self.autoscroll_var.get():
+            self.output.see("end")
+
+    def _run_single(self, label: str, cmd: str, log_fn=None):
+        """Run one command via login shell and stream output. Called from worker threads."""
+        log = log_fn or self._log
+        self.after(0, lambda: log(
             f"┌─ {label} ─────────────────────────────", "header"))
-        self.after(0, lambda: self._log(f"$ {cmd}", "warn"))
+        self.after(0, lambda: log(f"$ {cmd}", "warn"))
         try:
             proc = subprocess.Popen(
-                cmd, shell=True,
+                ["bash", "--login", "-i", "-c", cmd],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-                env=FULL_ENV                          # ← full PATH
+                text=True, bufsize=1
             )
             for line in proc.stdout:
                 if self._stop_requested:
                     proc.terminate()
                     break
-                self.after(0, lambda l=line.rstrip(): self._log(l, "stdout"))
+                self.after(0, lambda l=line.rstrip(): log(l, "stdout"))
             proc.wait()
             ec = proc.returncode
             if ec == 0:
-                self.after(0, lambda: self._log("└─ exit 0 ✓", "success"))
+                self.after(0, lambda: log("└─ exit 0 ✓", "success"))
             else:
-                self.after(0, lambda c=ec: self._log(f"└─ exit {c} ✗", "error"))
+                self.after(0, lambda c=ec: log(f"└─ exit {c} ✗", "error"))
         except Exception as ex:
-            self.after(0, lambda e=str(ex): self._log(f"└─ ERROR: {e}", "error"))
+            self.after(0, lambda e=str(ex): log(f"└─ ERROR: {e}", "error"))
 
     # ── FILE I/O ─────────────────────────────
 
