@@ -56,7 +56,7 @@ ok "Package manager detected: ${PKG_MANAGER}"
 pkg_update() {
     info "Updating package index..."
     case "$PKG_MANAGER" in
-        apt)    apt-get update -qq                  ;;
+        apt)    apt-get update -qq || warn "apt update had errors (ignored) — continuing..."  ;;
         pacman) pacman -Sy --noconfirm              ;;
         dnf)    dnf check-update -q || true         ;;  # dnf returns 100 if updates available, not an error
         zypper) zypper refresh -q                   ;;
