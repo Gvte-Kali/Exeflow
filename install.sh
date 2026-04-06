@@ -5,7 +5,6 @@
 #  Usage: sudo bash install.sh
 # ─────────────────────────────────────────────
 
-set -e
 
 EXEFLOW_URL="https://raw.githubusercontent.com/Gvte-Kali/Exeflow/refs/heads/main/exeflow.py"
 INSTALL_DIR="/opt/exeflow"
@@ -56,7 +55,7 @@ ok "Package manager detected: ${PKG_MANAGER}"
 pkg_update() {
     info "Updating package index..."
     case "$PKG_MANAGER" in
-        apt)    apt-get update -qq || warn "apt update had errors (ignored) — continuing..."  ;;
+        apt)    apt-get update -qq 2>/dev/null; warn "apt update finished (errors ignored)" ;;
         pacman) pacman -Sy --noconfirm              ;;
         dnf)    dnf check-update -q || true         ;;  # dnf returns 100 if updates available, not an error
         zypper) zypper refresh -q                   ;;
@@ -139,11 +138,9 @@ ok "Directory ready: ${INSTALL_DIR}"
 
 info "Downloading exeflow.py..."
 if command -v curl &>/dev/null; then
-    curl -fsSL "${EXEFLOW_URL}" -o "${INSTALL_DIR}/exeflow.py" \
-        || err "Download failed. Check the URL or your connection."
+    curl -fsSL "${EXEFLOW_URL}" -o "${INSTALL_DIR}/exeflow.py" || err "Download failed. Check the URL or your connection."
 else
-    wget -q "${EXEFLOW_URL}" -O "${INSTALL_DIR}/exeflow.py" \
-        || err "Download failed. Check the URL or your connection."
+    wget -q "${EXEFLOW_URL}" -O "${INSTALL_DIR}/exeflow.py" || err "Download failed. Check the URL or your connection."
 fi
 chmod 644 "${INSTALL_DIR}/exeflow.py"
 ok "Downloaded to ${INSTALL_DIR}/exeflow.py"
