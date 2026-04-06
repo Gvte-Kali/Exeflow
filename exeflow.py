@@ -14,6 +14,58 @@ import re
 from datetime import datetime
 
 # ──────────────────────────────────────────────
+#  ANSI COLOR PARSER
+# ──────────────────────────────────────────────
+import re as _re
+
+ANSI_ESCAPE = _re.compile(r'\[([0-9;]*)m')
+
+# Map ANSI color codes → Tkinter tag names
+ANSI_COLORS = {
+    # Reset
+    "0":  "ansi_reset",
+    # Bold (treat as bright)
+    "1":  "ansi_bold",
+    # Foreground colors
+    "30": "ansi_black",   "31": "ansi_red",     "32": "ansi_green",
+    "33": "ansi_yellow",  "34": "ansi_blue",    "35": "ansi_magenta",
+    "36": "ansi_cyan",    "37": "ansi_white",
+    # Bright foreground
+    "90": "ansi_bright_black", "91": "ansi_bright_red",   "92": "ansi_bright_green",
+    "93": "ansi_bright_yellow","94": "ansi_bright_blue",  "95": "ansi_bright_magenta",
+    "96": "ansi_bright_cyan",  "97": "ansi_bright_white",
+}
+
+def parse_ansi(text: str) -> list[tuple[str, str]]:
+    """
+    Parse a string with ANSI escape codes.
+    Returns list of (text_chunk, tag_name) tuples.
+    tag_name is '' for default color.
+    """
+    result = []
+    current_tag = ""
+    last = 0
+    for m in ANSI_ESCAPE.finditer(text):
+        # Text before this escape
+        if m.start() > last:
+            result.append((text[last:m.start()], current_tag))
+        # Update current tag
+        code = m.group(1)
+        if code == "" or code == "0":
+            current_tag = ""
+        else:
+            # Handle compound codes like "1;34"
+            for part in code.split(";"):
+                if part in ANSI_COLORS:
+                    current_tag = ANSI_COLORS[part]
+        last = m.end()
+    # Remaining text
+    if last < len(text):
+        result.append((text[last:], current_tag))
+    return result if result else [(text, "")]
+
+
+# ──────────────────────────────────────────────
 #  PATHS
 # ──────────────────────────────────────────────
 PLAYBOOKS_DIR = None
@@ -503,6 +555,26 @@ class ExeFlow(tk.Tk):
         self.output.tag_configure("dim",     foreground=GRAY)
         self.output.tag_configure("stdout",  foreground=WHITE)
 
+        # ANSI color tags
+        self.output.tag_configure("ansi_reset",          foreground=WHITE)
+        self.output.tag_configure("ansi_bold",           foreground=WHITE, font=("Monospace", 9, "bold"))
+        self.output.tag_configure("ansi_black",          foreground="#555555")
+        self.output.tag_configure("ansi_red",            foreground="#ff5555")
+        self.output.tag_configure("ansi_green",          foreground="#50fa7b")
+        self.output.tag_configure("ansi_yellow",         foreground="#f1fa8c")
+        self.output.tag_configure("ansi_blue",           foreground="#6272a4")
+        self.output.tag_configure("ansi_magenta",        foreground="#ff79c6")
+        self.output.tag_configure("ansi_cyan",           foreground="#8be9fd")
+        self.output.tag_configure("ansi_white",          foreground="#f8f8f2")
+        self.output.tag_configure("ansi_bright_black",   foreground="#6272a4")
+        self.output.tag_configure("ansi_bright_red",     foreground="#ff6e6e")
+        self.output.tag_configure("ansi_bright_green",   foreground="#69ff94")
+        self.output.tag_configure("ansi_bright_yellow",  foreground="#ffffa5")
+        self.output.tag_configure("ansi_bright_blue",    foreground="#d6acff")
+        self.output.tag_configure("ansi_bright_magenta", foreground="#ff92df")
+        self.output.tag_configure("ansi_bright_cyan",    foreground="#a4ffff")
+        self.output.tag_configure("ansi_bright_white",   foreground="#ffffff")
+
         self._apply_ttk_style()
 
     def _apply_ttk_style(self):
@@ -618,7 +690,19 @@ class ExeFlow(tk.Tk):
         self.output.config(state="normal")
         if self.timestamp_var.get() and tag in ("header", "warn", "error"):
             self.output.insert("end", f"[{get_timestamp()}] ", "dim")
-        self.output.insert("end", text + ("\n" if newline else ""), tag)
+
+        if tag == "stdout" and ANSI_ESCAPE.search(text):
+            # Parse ANSI codes and insert each chunk with its color tag
+            chunks = parse_ansi(text)
+            for i, (chunk, ansi_tag) in enumerate(chunks):
+                insert_tag = ansi_tag if ansi_tag else "stdout"
+                if i == len(chunks) - 1:
+                    self.output.insert("end", chunk + ("\n" if newline else ""), insert_tag)
+                else:
+                    self.output.insert("end", chunk, insert_tag)
+        else:
+            self.output.insert("end", text + ("\n" if newline else ""), tag)
+
         self.output.config(state="disabled")
         if self.autoscroll_var.get():
             self.output.see("end")
