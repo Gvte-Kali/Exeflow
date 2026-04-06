@@ -1,91 +1,83 @@
 #!/usr/bin/env python3
 """
-ExeFlow — Command Orchestrator for Exegol
-A variable-driven, shareable command sequencer built for pentesters.
+ExeFlow — Pentest Command Orchestrator
+A variable-driven, shareable command sequencer built for Exegol and Linux pentesters.
+
+Author  : Gvte-Kali
+Repo    : https://github.com/Gvte-Kali/Exeflow
+License : MIT
 """
 
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-import subprocess
-import threading
 import json
 import os
 import re
+import subprocess
+import threading
+import tkinter as tk
 from datetime import datetime
+from tkinter import filedialog, messagebox, ttk
 
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 #  ANSI COLOR PARSER
-# ──────────────────────────────────────────────
-import re as _re
+#  Converts ANSI escape sequences to Tkinter Text widget tags.
+# ──────────────────────────────────────────────────────────────────────────────
 
-ANSI_ESCAPE = _re.compile(r'\[([0-9;]*)m')
+ANSI_ESCAPE = re.compile(r"\x1b\[([0-9;]*)m")
 
-# Map ANSI color codes → Tkinter tag names
-ANSI_COLORS = {
-    # Reset
+ANSI_TAG_MAP = {
     "0":  "ansi_reset",
-    # Bold (treat as bright)
     "1":  "ansi_bold",
-    # Foreground colors
-    "30": "ansi_black",   "31": "ansi_red",     "32": "ansi_green",
-    "33": "ansi_yellow",  "34": "ansi_blue",    "35": "ansi_magenta",
-    "36": "ansi_cyan",    "37": "ansi_white",
-    # Bright foreground
-    "90": "ansi_bright_black", "91": "ansi_bright_red",   "92": "ansi_bright_green",
-    "93": "ansi_bright_yellow","94": "ansi_bright_blue",  "95": "ansi_bright_magenta",
-    "96": "ansi_bright_cyan",  "97": "ansi_bright_white",
+    "30": "ansi_black",          "31": "ansi_red",
+    "32": "ansi_green",          "33": "ansi_yellow",
+    "34": "ansi_blue",           "35": "ansi_magenta",
+    "36": "ansi_cyan",           "37": "ansi_white",
+    "90": "ansi_bright_black",   "91": "ansi_bright_red",
+    "92": "ansi_bright_green",   "93": "ansi_bright_yellow",
+    "94": "ansi_bright_blue",    "95": "ansi_bright_magenta",
+    "96": "ansi_bright_cyan",    "97": "ansi_bright_white",
 }
+
 
 def parse_ansi(text: str) -> list[tuple[str, str]]:
     """
-    Parse a string with ANSI escape codes.
-    Returns list of (text_chunk, tag_name) tuples.
-    tag_name is '' for default color.
+    Split a string containing ANSI color codes into (chunk, tag) pairs.
+    Returns [(text, tag), ...] where tag is '' for the default color.
     """
-    result = []
+    result: list[tuple[str, str]] = []
     current_tag = ""
     last = 0
     for m in ANSI_ESCAPE.finditer(text):
-        # Text before this escape
         if m.start() > last:
             result.append((text[last:m.start()], current_tag))
-        # Update current tag
         code = m.group(1)
-        if code == "" or code == "0":
+        if code in ("", "0"):
             current_tag = ""
         else:
-            # Handle compound codes like "1;34"
             for part in code.split(";"):
-                if part in ANSI_COLORS:
-                    current_tag = ANSI_COLORS[part]
+                if part in ANSI_TAG_MAP:
+                    current_tag = ANSI_TAG_MAP[part]
         last = m.end()
-    # Remaining text
     if last < len(text):
         result.append((text[last:], current_tag))
-    return result if result else [(text, "")]
+    return result or [(text, "")]
 
 
-# ──────────────────────────────────────────────
-#  PATHS
-# ──────────────────────────────────────────────
-PLAYBOOKS_DIR = None
+# ──────────────────────────────────────────────────────────────────────────────
+#  EXEGOL ALIAS RESOLVER
+#  Parses /opt/.exegol_aliases at startup so tools defined as shell aliases
+#  (e.g. wpscan, msfconsole, evil-winrm) resolve to their real executables.
+# ──────────────────────────────────────────────────────────────────────────────
 
-# ──────────────────────────────────────────────
-#  EXEGOL ALIAS RESOLUTION
-#  Parses /opt/.exegol_aliases to resolve tool
-#  names to their real executable paths.
-# ──────────────────────────────────────────────
-EXEGOL_ALIASES: dict[str, str] = {}
+EXEGOL_ALIASES_PATH = "/opt/.exegol_aliases"
 
-def _load_exegol_aliases(path="/opt/.exegol_aliases") -> dict[str, str]:
+
+def _load_exegol_aliases(path: str = EXEGOL_ALIASES_PATH) -> dict[str, str]:
     """
-    Parse /opt/.exegol_aliases and return a dict of {alias_name: real_command}.
-    Handles both:
-      alias foo='bar baz'
-      alias foo="bar baz"
-    Ignores functions, comments, blank lines.
+    Return {alias_name: real_command} parsed from the Exegol aliases file.
+    Handles single-quoted and double-quoted values.
+    Skips functions, comments, and blank lines.
     """
-    aliases = {}
+    aliases: dict[str, str] = {}
     if not os.path.exists(path):
         return aliases
     try:
@@ -94,7 +86,6 @@ def _load_exegol_aliases(path="/opt/.exegol_aliases") -> dict[str, str]:
                 line = line.strip()
                 if not line or line.startswith("#") or line.startswith("function "):
                     continue
-                # Match: alias NAME='...' or alias NAME="..."
                 m = re.match(r"""^alias\s+([A-Za-z0-9_.@-]+)=['"](.+)['"]$""", line)
                 if m:
                     aliases[m.group(1)] = m.group(2)
@@ -102,29 +93,34 @@ def _load_exegol_aliases(path="/opt/.exegol_aliases") -> dict[str, str]:
         pass
     return aliases
 
-EXEGOL_ALIASES = _load_exegol_aliases()
+
+EXEGOL_ALIASES: dict[str, str] = _load_exegol_aliases()
+
 
 def resolve_alias(cmd: str) -> str:
     """
-    If the first word of cmd matches a known Exegol alias, replace it
-    with the real command. Otherwise return cmd unchanged.
-    Example: 'wpscan --url ...' -> '/usr/local/rvm/.../wpscan --url ...'
+    If the first token of cmd matches a known Exegol alias, substitute it
+    with the real command string. Otherwise return cmd unchanged.
+
+    Example:
+        'wpscan --url http://...' → '/usr/local/rvm/.../wpscan --url http://...'
     """
     if not EXEGOL_ALIASES:
         return cmd
     parts = cmd.strip().split(None, 1)
     if not parts:
         return cmd
-    tool = parts[0]
-    rest = parts[1] if len(parts) > 1 else ""
+    tool, rest = parts[0], (parts[1] if len(parts) > 1 else "")
     if tool in EXEGOL_ALIASES:
         real = EXEGOL_ALIASES[tool]
         return f"{real} {rest}".strip() if rest else real
     return cmd
 
-# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  THEME
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+
 BG        = "#0d0f0e"
 BG2       = "#131614"
 BG3       = "#1a1d1b"
@@ -132,91 +128,106 @@ BG4       = "#222624"
 BORDER    = "#2a2e2b"
 GREEN     = "#39ff7e"
 GREEN_DIM = "#1e7a42"
-GREEN_MUT = "#2a4a35"
 AMBER     = "#ffb347"
 RED       = "#ff4f4f"
 CYAN      = "#4fc3f7"
 WHITE     = "#e8ede9"
 GRAY      = "#6b7570"
+
 FONT_MONO    = ("Monospace", 10)
 FONT_MONO_SM = ("Monospace", 9)
 FONT_TITLE   = ("Monospace", 14, "bold")
 
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 #  HELPERS
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
-def resolve_command(cmd_template: str, variables: dict) -> str:
-    def replacer(m):
-        key = m.group(1).strip()
-        return variables.get(key, m.group(0))
-    return re.sub(r'\{\{([^}]+)\}\}', replacer, cmd_template)
+def resolve_command(template: str, variables: dict[str, str]) -> str:
+    """Replace {{VAR_NAME}} placeholders with their values."""
+    def replacer(m: re.Match) -> str:
+        return variables.get(m.group(1).strip(), m.group(0))
+    return re.sub(r"\{\{([^}]+)\}\}", replacer, template)
 
-def get_timestamp():
+
+def get_timestamp() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
-# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  DATA MODELS
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 class Variable:
-    def __init__(self, name="", value="", description=""):
+    def __init__(self, name: str = "", value: str = "", description: str = ""):
         self.name        = name
         self.value       = value
         self.description = description
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {"name": self.name, "value": self.value, "description": self.description}
 
     @staticmethod
-    def from_dict(d):
-        return Variable(d.get("name",""), d.get("value",""), d.get("description",""))
+    def from_dict(d: dict) -> "Variable":
+        return Variable(d.get("name", ""), d.get("value", ""), d.get("description", ""))
 
 
 class Command:
-    def __init__(self, label="", template="", description="", enabled=True):
+    def __init__(self, label: str = "", template: str = "",
+                 description: str = "", enabled: bool = True):
         self.label       = label
         self.template    = template
         self.description = description
         self.enabled     = enabled
 
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return {"label": self.label, "template": self.template,
                 "description": self.description, "enabled": self.enabled}
 
     @staticmethod
-    def from_dict(d):
-        return Command(d.get("label",""), d.get("template",""),
-                       d.get("description",""), d.get("enabled", True))
+    def from_dict(d: dict) -> "Command":
+        return Command(d.get("label", ""), d.get("template", ""),
+                       d.get("description", ""), d.get("enabled", True))
 
 
 class Playbook:
-    def __init__(self, name="Unnamed Playbook", description=""):
+    def __init__(self, name: str = "Unnamed Playbook", description: str = ""):
         self.name        = name
         self.description = description
         self.variables: list[Variable] = []
         self.commands:  list[Command]  = []
 
-    def to_dict(self):
-        return {"name": self.name, "description": self.description,
-                "variables": [v.to_dict() for v in self.variables],
-                "commands":  [c.to_dict() for c in self.commands]}
+    def to_dict(self) -> dict:
+        return {
+            "name":        self.name,
+            "description": self.description,
+            "variables":   [v.to_dict() for v in self.variables],
+            "commands":    [c.to_dict() for c in self.commands],
+        }
 
     @staticmethod
-    def from_dict(d):
-        pb = Playbook(d.get("name","Unnamed"), d.get("description",""))
+    def from_dict(d: dict) -> "Playbook":
+        pb = Playbook(d.get("name", "Unnamed"), d.get("description", ""))
         pb.variables = [Variable.from_dict(v) for v in d.get("variables", [])]
         pb.commands  = [Command.from_dict(c)  for c in d.get("commands",  [])]
         return pb
 
-    def get_vars_dict(self):
+    def get_vars_dict(self) -> dict[str, str]:
         return {v.name: v.value for v in self.variables}
 
-# ──────────────────────────────────────────────
-#  STYLED WIDGETS
-# ──────────────────────────────────────────────
 
-def styled_btn(parent, text, command=None, color=GREEN, width=None, **kw):
+# ──────────────────────────────────────────────────────────────────────────────
+#  SHARED STATE
+# ──────────────────────────────────────────────────────────────────────────────
+
+PLAYBOOKS_DIR: str | None = None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  WIDGET HELPERS
+# ──────────────────────────────────────────────────────────────────────────────
+
+def styled_btn(parent, text: str, command=None, color: str = GREEN,
+               width: int | None = None, **kw) -> tk.Button:
     cfg = dict(text=text, command=command, bg=BG3, fg=color,
                activebackground=BG4, activeforeground=color,
                relief="flat", bd=0, font=FONT_MONO_SM,
@@ -229,26 +240,29 @@ def styled_btn(parent, text, command=None, color=GREEN, width=None, **kw):
     btn.bind("<Leave>", lambda e: btn.config(bg=BG3))
     return btn
 
-def separator(parent, color=BORDER, pady=4):
+
+def separator(parent, color: str = BORDER, pady: int = 4) -> tk.Frame:
     f = tk.Frame(parent, bg=color, height=1)
     f.pack(fill="x", padx=8, pady=pady)
     return f
 
-def section_label(parent, text, color=GREEN):
+
+def section_label(parent, text: str, color: str = GREEN) -> tk.Frame:
     f = tk.Frame(parent, bg=BG)
     f.pack(fill="x", padx=8, pady=(8, 2))
     tk.Label(f, text=text, bg=BG, fg=color, font=FONT_MONO_SM).pack(side="left")
     tk.Frame(f, bg=BORDER, height=1).pack(side="left", fill="x", expand=True, padx=(6, 0))
     return f
 
-# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  VARIABLE EDITOR DIALOG
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 class VarDialog(tk.Toplevel):
-    def __init__(self, parent, variable: Variable = None):
+    def __init__(self, parent, variable: Variable | None = None):
         super().__init__(parent)
-        self.result = None
+        self.result: Variable | None = None
         self.title("Variable Editor")
         self.configure(bg=BG)
         self.resizable(False, False)
@@ -261,12 +275,12 @@ class VarDialog(tk.Toplevel):
         for label, attr in [("Name", "name"), ("Value", "value"), ("Description", "description")]:
             tk.Label(self, text=f"  {label}:", bg=BG, fg=GRAY,
                      font=FONT_MONO_SM).pack(anchor="w", padx=12)
-            e = tk.Entry(self, bg=BG3, fg=WHITE, insertbackground=GREEN, font=FONT_MONO,
-                         relief="flat", bd=0, highlightthickness=1,
-                         highlightbackground=BORDER, highlightcolor=GREEN)
-            e.insert(0, getattr(var, attr))
-            e.pack(fill="x", padx=12, pady=(0, 6))
-            setattr(self, f"e_{attr}", e)
+            entry = tk.Entry(self, bg=BG3, fg=WHITE, insertbackground=GREEN, font=FONT_MONO,
+                             relief="flat", bd=0, highlightthickness=1,
+                             highlightbackground=BORDER, highlightcolor=GREEN)
+            entry.insert(0, getattr(var, attr))
+            entry.pack(fill="x", padx=12, pady=(0, 6))
+            setattr(self, f"e_{attr}", entry)
 
         tk.Label(self, text="  Syntax: {{NAME}} in commands",
                  bg=BG, fg=GREEN_DIM, font=FONT_MONO_SM).pack(anchor="w", padx=12, pady=(0, 8))
@@ -280,20 +294,24 @@ class VarDialog(tk.Toplevel):
     def _save(self):
         name = self.e_name.get().strip()
         if not name:
-            messagebox.showerror("Error", "Variable name required", parent=self); return
-        if not re.match(r'^[A-Za-z0-9_]+$', name):
-            messagebox.showerror("Error", "Name: alphanumeric + underscore only", parent=self); return
+            messagebox.showerror("Error", "Variable name required.", parent=self)
+            return
+        if not re.match(r"^[A-Za-z0-9_]+$", name):
+            messagebox.showerror("Error", "Name must be alphanumeric + underscore only.", parent=self)
+            return
         self.result = Variable(name, self.e_value.get(), self.e_description.get())
         self.destroy()
 
-# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  COMMAND EDITOR DIALOG
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 class CmdDialog(tk.Toplevel):
-    def __init__(self, parent, command: Command = None, variables: list = None):
+    def __init__(self, parent, command: Command | None = None,
+                 variables: list[Variable] | None = None):
         super().__init__(parent)
-        self.result = None
+        self.result: Command | None = None
         self.title("Command Editor")
         self.configure(bg=BG)
         self.resizable(True, False)
@@ -308,12 +326,12 @@ class CmdDialog(tk.Toplevel):
         for label, attr in [("Label", "label"), ("Description", "description")]:
             tk.Label(self, text=f"  {label}:", bg=BG, fg=GRAY,
                      font=FONT_MONO_SM).pack(anchor="w", padx=12)
-            e = tk.Entry(self, bg=BG3, fg=WHITE, insertbackground=GREEN, font=FONT_MONO,
-                         relief="flat", bd=0, highlightthickness=1,
-                         highlightbackground=BORDER, highlightcolor=CYAN)
-            e.insert(0, getattr(cmd, attr))
-            e.pack(fill="x", padx=12, pady=(0, 6))
-            setattr(self, f"e_{attr}", e)
+            entry = tk.Entry(self, bg=BG3, fg=WHITE, insertbackground=GREEN, font=FONT_MONO,
+                             relief="flat", bd=0, highlightthickness=1,
+                             highlightbackground=BORDER, highlightcolor=CYAN)
+            entry.insert(0, getattr(cmd, attr))
+            entry.pack(fill="x", padx=12, pady=(0, 6))
+            setattr(self, f"e_{attr}", entry)
 
         tk.Label(self, text="  Command template:", bg=BG, fg=GRAY,
                  font=FONT_MONO_SM).pack(anchor="w", padx=12)
@@ -331,10 +349,10 @@ class CmdDialog(tk.Toplevel):
             vf.pack(fill="x", padx=12, pady=(0, 8))
             for v in vars_:
                 tag = "{{" + v.name + "}}"
-                def insert_var(t=tag):
+                def _insert(t=tag):
                     self.e_template.insert("insert", t)
                     self.e_template.focus_set()
-                styled_btn(vf, v.name, insert_var, color=AMBER, pady=2).pack(side="left", padx=(0, 4))
+                styled_btn(vf, v.name, _insert, color=AMBER, pady=2).pack(side="left", padx=(0, 4))
 
         row = tk.Frame(self, bg=BG)
         row.pack(fill="x", padx=12, pady=(0, 12))
@@ -346,15 +364,18 @@ class CmdDialog(tk.Toplevel):
         label    = self.e_label.get().strip()
         template = self.e_template.get("1.0", "end-1c").strip()
         if not label:
-            messagebox.showerror("Error", "Label required", parent=self); return
+            messagebox.showerror("Error", "Label required.", parent=self)
+            return
         if not template:
-            messagebox.showerror("Error", "Command template required", parent=self); return
+            messagebox.showerror("Error", "Command template required.", parent=self)
+            return
         self.result = Command(label, template, self.e_description.get().strip())
         self.destroy()
 
-# ──────────────────────────────────────────────
-#  MAIN APP
-# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  MAIN APPLICATION
+# ──────────────────────────────────────────────────────────────────────────────
 
 class ExeFlow(tk.Tk):
     def __init__(self):
@@ -367,52 +388,62 @@ class ExeFlow(tk.Tk):
         self.playbook        = Playbook("New Playbook")
         self._running        = False
         self._stop_requested = False
-        # checked state stored by command index: {idx: bool}
-        self._checked: dict[int, bool] = {}
+        self._checked:       dict[int, bool] = {}
+        self._select_all_var = tk.BooleanVar(value=False)
+
+        # Parallel mode state
+        self._parallel_buffers:      dict[str, list] = {}
+        self._parallel_labels:       list[str]       = []
+        self._parallel_active_label: str | None      = None
 
         self._build_ui()
         self._refresh_all()
 
-    # ── UI BUILD ─────────────────────────────
+    # ── UI ────────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # TOP BAR
-        topbar = tk.Frame(self, bg=BG2, height=44)
-        topbar.pack(fill="x")
-        topbar.pack_propagate(False)
+        self._build_topbar()
+        self._build_statusbar()
+        self._build_panes()
 
-        tk.Label(topbar, text="⬡ EXEFLOW", bg=BG2, fg=GREEN,
+    def _build_topbar(self):
+        bar = tk.Frame(self, bg=BG2, height=44)
+        bar.pack(fill="x")
+        bar.pack_propagate(False)
+
+        tk.Label(bar, text="⬡ EXEFLOW", bg=BG2, fg=GREEN,
                  font=FONT_TITLE, padx=16).pack(side="left", pady=6)
-        tk.Label(topbar, text="command orchestrator", bg=BG2, fg=GREEN_DIM,
+        tk.Label(bar, text="command orchestrator", bg=BG2, fg=GREEN_DIM,
                  font=FONT_MONO_SM).pack(side="left")
-        tk.Label(topbar, text="│", bg=BG2, fg=BORDER,
+        tk.Label(bar, text="│", bg=BG2, fg=BORDER,
                  font=("Monospace", 14, "bold")).pack(side="left", padx=8)
 
         self.pb_name_var = tk.StringVar(value=self.playbook.name)
-        name_entry = tk.Entry(topbar, textvariable=self.pb_name_var, bg=BG2, fg=AMBER,
+        name_entry = tk.Entry(bar, textvariable=self.pb_name_var, bg=BG2, fg=AMBER,
                               insertbackground=AMBER, font=("Monospace", 11, "bold"),
                               relief="flat", bd=0, width=30)
         name_entry.pack(side="left")
-        name_entry.bind("<FocusOut>", lambda e: setattr(self.playbook, "name", self.pb_name_var.get()))
+        name_entry.bind("<FocusOut>",
+                        lambda e: setattr(self.playbook, "name", self.pb_name_var.get()))
 
         for text, cmd, color in [
             ("⬇ Export",           self._export,                WHITE),
             ("⬆ Import",           self._import,                WHITE),
             ("📁 Playbooks Folder", self._pick_playbooks_folder, WHITE),
         ]:
-            styled_btn(topbar, text, cmd, color=color).pack(side="right", padx=3, pady=6)
+            styled_btn(bar, text, cmd, color=color).pack(side="right", padx=3, pady=6)
 
-        # STATUS BAR
-        self.status_bar = tk.Frame(self, bg=BG2, height=24)
-        self.status_bar.pack(side="bottom", fill="x")
+    def _build_statusbar(self):
+        bar = tk.Frame(self, bg=BG2, height=24)
+        bar.pack(side="bottom", fill="x")
         self.status_var = tk.StringVar(value="ready")
-        tk.Label(self.status_bar, textvariable=self.status_var,
+        tk.Label(bar, textvariable=self.status_var,
                  bg=BG2, fg=GREEN_DIM, font=FONT_MONO_SM, padx=8).pack(side="left")
         self.progress_var = tk.StringVar(value="")
-        tk.Label(self.status_bar, textvariable=self.progress_var,
+        tk.Label(bar, textvariable=self.progress_var,
                  bg=BG2, fg=AMBER, font=FONT_MONO_SM, padx=8).pack(side="right")
 
-        # MAIN PANES
+    def _build_panes(self):
         self._paned = tk.PanedWindow(self, orient="horizontal", bg=BORDER,
                                      sashwidth=5, relief="flat", bd=0)
         self._paned.pack(fill="both", expand=True)
@@ -427,28 +458,28 @@ class ExeFlow(tk.Tk):
         self.after(100, self._set_sash_center)
 
     def _set_sash_center(self):
-        total = self._paned.winfo_width()
-        if total > 10:
-            self._paned.sash_place(0, total // 2, 0)
+        w = self._paned.winfo_width()
+        if w > 10:
+            self._paned.sash_place(0, w // 2, 0)
         else:
             self.after(100, self._set_sash_center)
 
-    # ── LEFT PANEL ───────────────────────────
+    # ── LEFT PANEL ────────────────────────────────────────────────────────────
 
     def _build_left(self, parent):
-        # VARIABLES
+        # Variables section
         section_label(parent, "[ VARIABLES ]", GREEN)
 
-        var_toolbar = tk.Frame(parent, bg=BG)
-        var_toolbar.pack(fill="x", padx=8, pady=(0, 4))
-        styled_btn(var_toolbar, "+ Add",  self._add_variable,  color=GREEN, pady=2).pack(side="left")
-        styled_btn(var_toolbar, "✎ Edit", self._edit_variable, color=WHITE, pady=2).pack(side="left", padx=4)
-        styled_btn(var_toolbar, "✗ Del",  self._del_variable,  color=RED,   pady=2).pack(side="left")
+        tb = tk.Frame(parent, bg=BG)
+        tb.pack(fill="x", padx=8, pady=(0, 4))
+        styled_btn(tb, "+ Add",  self._add_variable,  color=GREEN, pady=2).pack(side="left")
+        styled_btn(tb, "✎ Edit", self._edit_variable, color=WHITE, pady=2).pack(side="left", padx=4)
+        styled_btn(tb, "✗ Del",  self._del_variable,  color=RED,   pady=2).pack(side="left")
 
         vf = tk.Frame(parent, bg=BG3, highlightthickness=1, highlightbackground=BORDER)
         vf.pack(fill="x", padx=8, pady=(0, 4))
 
-        self.var_tree = ttk.Treeview(vf, columns=("Name","Value","Desc"),
+        self.var_tree = ttk.Treeview(vf, columns=("Name", "Value", "Desc"),
                                      show="headings", height=8, selectmode="browse")
         self.var_tree.heading("Name",  text="NAME")
         self.var_tree.heading("Value", text="VALUE")
@@ -462,28 +493,25 @@ class ExeFlow(tk.Tk):
 
         separator(parent, pady=4)
 
-        # COMMANDS
+        # Commands section
         section_label(parent, "[ COMMANDS ]", CYAN)
 
-        cmd_toolbar = tk.Frame(parent, bg=BG)
-        cmd_toolbar.pack(fill="x", padx=8, pady=(0, 2))
-        styled_btn(cmd_toolbar, "+ Add",  self._add_command,  color=CYAN,  pady=2).pack(side="left")
-        styled_btn(cmd_toolbar, "✎ Edit", self._edit_command, color=WHITE, pady=2).pack(side="left", padx=4)
-        styled_btn(cmd_toolbar, "✗ Del",  self._del_command,  color=RED,   pady=2).pack(side="left")
-        styled_btn(cmd_toolbar, "↑", self._cmd_up,   color=WHITE, pady=2, width=2).pack(side="left", padx=(8,2))
-        styled_btn(cmd_toolbar, "↓", self._cmd_down, color=WHITE, pady=2, width=2).pack(side="left")
+        tb2 = tk.Frame(parent, bg=BG)
+        tb2.pack(fill="x", padx=8, pady=(0, 2))
+        styled_btn(tb2, "+ Add",  self._add_command,  color=CYAN,  pady=2).pack(side="left")
+        styled_btn(tb2, "✎ Edit", self._edit_command, color=WHITE, pady=2).pack(side="left", padx=4)
+        styled_btn(tb2, "✗ Del",  self._del_command,  color=RED,   pady=2).pack(side="left")
+        styled_btn(tb2, "↑", self._cmd_up,   color=WHITE, pady=2, width=2).pack(side="left", padx=(8, 2))
+        styled_btn(tb2, "↓", self._cmd_down, color=WHITE, pady=2, width=2).pack(side="left")
 
-        # Select-all row
         sel_row = tk.Frame(parent, bg=BG)
         sel_row.pack(fill="x", padx=8, pady=(2, 2))
-        self._select_all_var = tk.BooleanVar(value=False)
         tk.Checkbutton(sel_row, text="Select / Deselect All",
                        variable=self._select_all_var,
                        command=self._toggle_select_all,
                        bg=BG, fg=WHITE, selectcolor=BG3,
                        activebackground=BG, font=FONT_MONO_SM).pack(side="left")
 
-        # ── Command list via Treeview (reliable on all Tkinter versions)
         cf = tk.Frame(parent, bg=BG3, highlightthickness=1, highlightbackground=BORDER)
         cf.pack(fill="both", expand=True, padx=8, pady=(0, 4))
 
@@ -501,103 +529,111 @@ class ExeFlow(tk.Tk):
         vsb.pack(side="right", fill="y")
         self.cmd_tree.pack(fill="both", expand=True)
 
-        self.cmd_tree.bind("<Button-1>",     self._on_cmd_click)
+        self.cmd_tree.bind("<Button-1>",       self._on_cmd_click)
         self.cmd_tree.bind("<Double-Button-1>", self._on_cmd_double_click)
         self.cmd_tree.tag_configure("checked",   foreground=GREEN)
         self.cmd_tree.tag_configure("unchecked", foreground=WHITE)
         self.cmd_tree.tag_configure("disabled",  foreground=GRAY)
 
-    # ── RIGHT PANEL ──────────────────────────
+    # ── RIGHT PANEL ───────────────────────────────────────────────────────────
 
     def _build_right(self, parent):
         section_label(parent, "[ OUTPUT ]", GREEN)
 
-        out_toolbar = tk.Frame(parent, bg=BG)
-        out_toolbar.pack(fill="x", padx=8, pady=(0, 4))
+        tb = tk.Frame(parent, bg=BG)
+        tb.pack(fill="x", padx=8, pady=(0, 4))
 
-        styled_btn(out_toolbar, "▶ Run Checked",   self._run_checked,  color=GREEN, pady=2).pack(side="left")
-        styled_btn(out_toolbar, "▶▶ Run All",       self._run_all,      color=GREEN, pady=2).pack(side="left", padx=4)
-        styled_btn(out_toolbar, "⟳ Run Parallel",   self._run_parallel, color=AMBER, pady=2).pack(side="left")
-        styled_btn(out_toolbar, "■ Stop",            self._stop,         color=RED,   pady=2).pack(side="left", padx=4)
+        styled_btn(tb, "▶ Run Checked",  self._run_checked,  color=GREEN, pady=2).pack(side="left")
+        styled_btn(tb, "▶▶ Run All",      self._run_all,      color=GREEN, pady=2).pack(side="left", padx=4)
+        styled_btn(tb, "⟳ Run Parallel",  self._run_parallel, color=AMBER, pady=2).pack(side="left")
+        styled_btn(tb, "■ Stop",           self._stop,         color=RED,   pady=2).pack(side="left", padx=4)
 
-        tk.Frame(out_toolbar, bg=BORDER, width=1).pack(side="left", fill="y", padx=6, pady=2)
+        tk.Frame(tb, bg=BORDER, width=1).pack(side="left", fill="y", padx=6, pady=2)
 
-        styled_btn(out_toolbar, "💾 Save Output", self._save_output,  color=CYAN,  pady=2).pack(side="left")
-        styled_btn(out_toolbar, "⌫ Clear",        self._clear_output, color=WHITE, pady=2).pack(side="left", padx=4)
+        styled_btn(tb, "💾 Save Output", self._save_output,  color=CYAN,  pady=2).pack(side="left")
+        styled_btn(tb, "⌫ Clear",        self._clear_output, color=WHITE, pady=2).pack(side="left", padx=4)
 
         self.autoscroll_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(out_toolbar, text="Auto-scroll", variable=self.autoscroll_var,
-                       bg=BG, fg=WHITE, selectcolor=BG3, activebackground=BG,
-                       font=FONT_MONO_SM).pack(side="left", padx=(6,0))
+        tk.Checkbutton(tb, text="Auto-scroll", variable=self.autoscroll_var,
+                       bg=BG, fg=WHITE, selectcolor=BG3,
+                       activebackground=BG, font=FONT_MONO_SM).pack(side="left", padx=(6, 0))
 
         self.timestamp_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(out_toolbar, text="Timestamps", variable=self.timestamp_var,
-                       bg=BG, fg=WHITE, selectcolor=BG3, activebackground=BG,
-                       font=FONT_MONO_SM).pack(side="left", padx=4)
+        tk.Checkbutton(tb, text="Timestamps", variable=self.timestamp_var,
+                       bg=BG, fg=WHITE, selectcolor=BG3,
+                       activebackground=BG, font=FONT_MONO_SM).pack(side="left", padx=4)
 
-        term_frame = tk.Frame(parent, bg=BG2, highlightthickness=1, highlightbackground=BORDER)
-        term_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        term = tk.Frame(parent, bg=BG2, highlightthickness=1, highlightbackground=BORDER)
+        term.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        self.output = tk.Text(term_frame, bg=BG2, fg=GREEN, font=FONT_MONO_SM,
+        self.output = tk.Text(term, bg=BG2, fg=GREEN, font=FONT_MONO_SM,
                               insertbackground=GREEN, relief="flat", bd=6,
                               state="disabled", wrap="none")
-        ysb = ttk.Scrollbar(term_frame, orient="vertical",   command=self.output.yview)
-        xsb = ttk.Scrollbar(term_frame, orient="horizontal", command=self.output.xview)
+        ysb = ttk.Scrollbar(term, orient="vertical",   command=self.output.yview)
+        xsb = ttk.Scrollbar(term, orient="horizontal", command=self.output.xview)
         self.output.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
         xsb.pack(side="bottom", fill="x")
         ysb.pack(side="right",  fill="y")
         self.output.pack(fill="both", expand=True)
 
-        self.output.tag_configure("header",  foreground=CYAN,  font=("Monospace", 10, "bold"))
+        # Standard tags
+        self.output.tag_configure("header",  foreground=CYAN, font=("Monospace", 10, "bold"))
         self.output.tag_configure("success", foreground=GREEN)
         self.output.tag_configure("error",   foreground=RED)
         self.output.tag_configure("warn",    foreground=AMBER)
         self.output.tag_configure("dim",     foreground=GRAY)
         self.output.tag_configure("stdout",  foreground=WHITE)
 
-        # ANSI color tags
-        self.output.tag_configure("ansi_reset",          foreground=WHITE)
-        self.output.tag_configure("ansi_bold",           foreground=WHITE, font=("Monospace", 9, "bold"))
-        self.output.tag_configure("ansi_black",          foreground="#555555")
-        self.output.tag_configure("ansi_red",            foreground="#ff5555")
-        self.output.tag_configure("ansi_green",          foreground="#50fa7b")
-        self.output.tag_configure("ansi_yellow",         foreground="#f1fa8c")
-        self.output.tag_configure("ansi_blue",           foreground="#6272a4")
-        self.output.tag_configure("ansi_magenta",        foreground="#ff79c6")
-        self.output.tag_configure("ansi_cyan",           foreground="#8be9fd")
-        self.output.tag_configure("ansi_white",          foreground="#f8f8f2")
-        self.output.tag_configure("ansi_bright_black",   foreground="#6272a4")
-        self.output.tag_configure("ansi_bright_red",     foreground="#ff6e6e")
-        self.output.tag_configure("ansi_bright_green",   foreground="#69ff94")
-        self.output.tag_configure("ansi_bright_yellow",  foreground="#ffffa5")
-        self.output.tag_configure("ansi_bright_blue",    foreground="#d6acff")
-        self.output.tag_configure("ansi_bright_magenta", foreground="#ff92df")
-        self.output.tag_configure("ansi_bright_cyan",    foreground="#a4ffff")
-        self.output.tag_configure("ansi_bright_white",   foreground="#ffffff")
+        # ANSI color tags (Dracula-inspired palette)
+        ansi_colors = {
+            "ansi_reset":          WHITE,
+            "ansi_bold":           WHITE,
+            "ansi_black":          "#555555",
+            "ansi_red":            "#ff5555",
+            "ansi_green":          "#50fa7b",
+            "ansi_yellow":         "#f1fa8c",
+            "ansi_blue":           "#6272a4",
+            "ansi_magenta":        "#ff79c6",
+            "ansi_cyan":           "#8be9fd",
+            "ansi_white":          "#f8f8f2",
+            "ansi_bright_black":   "#6272a4",
+            "ansi_bright_red":     "#ff6e6e",
+            "ansi_bright_green":   "#69ff94",
+            "ansi_bright_yellow":  "#ffffa5",
+            "ansi_bright_blue":    "#d6acff",
+            "ansi_bright_magenta": "#ff92df",
+            "ansi_bright_cyan":    "#a4ffff",
+            "ansi_bright_white":   "#ffffff",
+        }
+        for tag, color in ansi_colors.items():
+            kw = {"foreground": color}
+            if tag == "ansi_bold":
+                kw["font"] = ("Monospace", 9, "bold")
+            self.output.tag_configure(tag, **kw)
 
         self._apply_ttk_style()
 
     def _apply_ttk_style(self):
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure("Treeview",
-                        background=BG3, foreground=WHITE, fieldbackground=BG3,
-                        borderwidth=0, rowheight=24, font=FONT_MONO_SM)
-        style.configure("Treeview.Heading",
-                        background=BG4, foreground=GRAY, borderwidth=0, font=FONT_MONO_SM)
-        style.map("Treeview",
-                  background=[("selected", BG4)],
-                  foreground=[("selected", WHITE)])
-        style.configure("Vertical.TScrollbar",
-                        background=BG3, troughcolor=BG2, borderwidth=0, arrowsize=12)
-        style.configure("Horizontal.TScrollbar",
-                        background=BG3, troughcolor=BG2, borderwidth=0, arrowsize=12)
+        s = ttk.Style(self)
+        s.theme_use("clam")
+        s.configure("Treeview",
+                    background=BG3, foreground=WHITE, fieldbackground=BG3,
+                    borderwidth=0, rowheight=24, font=FONT_MONO_SM)
+        s.configure("Treeview.Heading",
+                    background=BG4, foreground=GRAY, borderwidth=0, font=FONT_MONO_SM)
+        s.map("Treeview",
+              background=[("selected", BG4)],
+              foreground=[("selected", WHITE)])
+        s.configure("Vertical.TScrollbar",
+                    background=BG3, troughcolor=BG2, borderwidth=0, arrowsize=12)
+        s.configure("Horizontal.TScrollbar",
+                    background=BG3, troughcolor=BG2, borderwidth=0, arrowsize=12)
 
-    def _style_tree(self, tree):
+    def _style_tree(self, tree: ttk.Treeview):
         tree.tag_configure("disabled", foreground=GRAY)
         tree.tag_configure("enabled",  foreground=WHITE)
 
-    # ── REFRESH ──────────────────────────────
+    # ── REFRESH ───────────────────────────────────────────────────────────────
 
     def _refresh_all(self):
         self._refresh_vars()
@@ -609,35 +645,32 @@ class ExeFlow(tk.Tk):
             self.var_tree.insert("", "end", values=(v.name, v.value, v.description))
 
     def _refresh_cmds(self):
-        # Preserve checked state by label before rebuild
-        old_checked = {}
+        # Preserve checkbox states by label
+        old_checked: dict[str, bool] = {}
         for iid in self.cmd_tree.get_children():
             vals = self.cmd_tree.item(iid, "values")
-            label = vals[1] if len(vals) > 1 else ""
-            old_checked[label] = (vals[0] == "☑")
+            if len(vals) > 1:
+                old_checked[vals[1]] = (vals[0] == "☑")
 
         self.cmd_tree.delete(*self.cmd_tree.get_children())
         self._checked.clear()
-
-        vars_dict = self.playbook.get_vars_dict()
+        vd = self.playbook.get_vars_dict()
 
         for i, cmd in enumerate(self.playbook.commands):
-            is_checked = old_checked.get(cmd.label, False)
-            self._checked[i] = is_checked
+            checked = old_checked.get(cmd.label, False)
+            self._checked[i] = checked
 
-            chk_icon = "☑" if is_checked else "☐"
-            preview  = resolve_command(cmd.template, vars_dict)
-            short    = preview[:60] + "…" if len(preview) > 60 else preview
+            icon    = "☑" if checked else "☐"
+            preview = resolve_command(cmd.template, vd)
+            short   = (preview[:60] + "…") if len(preview) > 60 else preview
+            tag     = "checked" if checked else ("disabled" if not cmd.enabled else "unchecked")
 
-            tag = "checked" if is_checked else ("disabled" if not cmd.enabled else "unchecked")
             self.cmd_tree.insert("", "end", iid=str(i),
-                                 values=(chk_icon, cmd.label, short),
-                                 tags=(tag,))
+                                 values=(icon, cmd.label, short), tags=(tag,))
 
-    # ── CHECKBOX INTERACTIONS ────────────────
+    # ── COMMAND LIST INTERACTIONS ─────────────────────────────────────────────
 
     def _on_cmd_click(self, event):
-        """Toggle checkbox on click. If parallel running, also switch output view."""
         region = self.cmd_tree.identify_region(event.x, event.y)
         if region not in ("cell", "tree"):
             return
@@ -646,12 +679,12 @@ class ExeFlow(tk.Tk):
             return
         idx = int(iid)
 
-        # If parallel mode is active, clicking switches the output view
-        if hasattr(self, "_parallel_buffers") and self._running:
+        # In parallel mode: click switches the output view instead of toggling
+        if self._parallel_buffers and self._running:
             label = self.playbook.commands[idx].label
             if label in self._parallel_buffers:
                 self._parallel_active_label = label
-                self._refresh_parallel_output()
+                self._redraw_parallel_output()
                 self.status_var.set(f"viewing: {label}")
                 return
 
@@ -663,17 +696,16 @@ class ExeFlow(tk.Tk):
         if iid:
             self._edit_command_by_idx(int(iid))
 
-    def _update_cmd_row(self, idx):
+    def _update_cmd_row(self, idx: int):
         if idx >= len(self.playbook.commands):
             return
-        cmd       = self.playbook.commands[idx]
-        is_checked = self._checked.get(idx, False)
-        chk_icon  = "☑" if is_checked else "☐"
-        vars_dict = self.playbook.get_vars_dict()
-        preview   = resolve_command(cmd.template, vars_dict)
-        short     = preview[:60] + "…" if len(preview) > 60 else preview
-        tag = "checked" if is_checked else ("disabled" if not cmd.enabled else "unchecked")
-        self.cmd_tree.item(str(idx), values=(chk_icon, cmd.label, short), tags=(tag,))
+        cmd     = self.playbook.commands[idx]
+        checked = self._checked.get(idx, False)
+        icon    = "☑" if checked else "☐"
+        preview = resolve_command(cmd.template, self.playbook.get_vars_dict())
+        short   = (preview[:60] + "…") if len(preview) > 60 else preview
+        tag     = "checked" if checked else ("disabled" if not cmd.enabled else "unchecked")
+        self.cmd_tree.item(str(idx), values=(icon, cmd.label, short), tags=(tag,))
 
     def _toggle_select_all(self):
         val = self._select_all_var.get()
@@ -684,22 +716,19 @@ class ExeFlow(tk.Tk):
     def _get_checked_indices(self) -> list[int]:
         return [i for i, v in self._checked.items() if v]
 
-    # ── OUTPUT ───────────────────────────────
+    # ── OUTPUT ────────────────────────────────────────────────────────────────
 
-    def _log(self, text, tag="stdout", newline=True):
+    def _log(self, text: str, tag: str = "stdout", newline: bool = True):
         self.output.config(state="normal")
         if self.timestamp_var.get() and tag in ("header", "warn", "error"):
             self.output.insert("end", f"[{get_timestamp()}] ", "dim")
 
         if tag == "stdout" and ANSI_ESCAPE.search(text):
-            # Parse ANSI codes and insert each chunk with its color tag
             chunks = parse_ansi(text)
             for i, (chunk, ansi_tag) in enumerate(chunks):
-                insert_tag = ansi_tag if ansi_tag else "stdout"
-                if i == len(chunks) - 1:
-                    self.output.insert("end", chunk + ("\n" if newline else ""), insert_tag)
-                else:
-                    self.output.insert("end", chunk, insert_tag)
+                t = ansi_tag or "stdout"
+                suffix = "\n" if (newline and i == len(chunks) - 1) else ""
+                self.output.insert("end", chunk + suffix, t)
         else:
             self.output.insert("end", text + ("\n" if newline else ""), tag)
 
@@ -717,25 +746,24 @@ class ExeFlow(tk.Tk):
             defaultextension=".txt",
             filetypes=[("Text file", "*.txt"), ("Log file", "*.log"), ("All", "*.*")],
             initialdir=PLAYBOOKS_DIR or os.path.expanduser("~"),
-            initialfile=f"exeflow_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            initialfile=f"exeflow_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         )
         if not path:
             return
         try:
-            content = self.output.get("1.0", "end-1c")
             with open(path, "w") as f:
-                f.write(content)
+                f.write(self.output.get("1.0", "end-1c"))
             self._log(f"Output saved → {path}", "success")
         except Exception as e:
             messagebox.showerror("Save Error", str(e))
 
-    # ── VARIABLE ACTIONS ─────────────────────
+    # ── VARIABLE ACTIONS ──────────────────────────────────────────────────────
 
     def _add_variable(self):
         dlg = VarDialog(self)
         self.wait_window(dlg)
         if dlg.result:
-            if dlg.result.name in [v.name for v in self.playbook.variables]:
+            if dlg.result.name in {v.name for v in self.playbook.variables}:
                 messagebox.showerror("Error", f"Variable '{dlg.result.name}' already exists.")
                 return
             self.playbook.variables.append(dlg.result)
@@ -763,13 +791,13 @@ class ExeFlow(tk.Tk):
             self._refresh_vars()
             self._refresh_cmds()
 
-    def _get_selected_var_idx(self):
+    def _get_selected_var_idx(self) -> int | None:
         sel = self.var_tree.selection()
         if not sel:
             return None
         return list(self.var_tree.get_children()).index(sel[0])
 
-    # ── COMMAND ACTIONS ──────────────────────
+    # ── COMMAND ACTIONS ───────────────────────────────────────────────────────
 
     def _add_command(self):
         dlg = CmdDialog(self, variables=self.playbook.variables)
@@ -780,17 +808,17 @@ class ExeFlow(tk.Tk):
 
     def _edit_command(self):
         checked = self._get_checked_indices()
-        if not checked:
-            # fallback: use treeview selection
+        if checked:
+            self._edit_command_by_idx(checked[0])
+        else:
             sel = self.cmd_tree.selection()
             if sel:
                 self._edit_command_by_idx(int(sel[0]))
             else:
-                messagebox.showinfo("Edit Command", "Click a command row to select it, then press Edit.")
-            return
-        self._edit_command_by_idx(checked[0])
+                messagebox.showinfo("Edit Command",
+                                    "Click a command row to select it, then press Edit.")
 
-    def _edit_command_by_idx(self, idx):
+    def _edit_command_by_idx(self, idx: int):
         dlg = CmdDialog(self, self.playbook.commands[idx], self.playbook.variables)
         self.wait_window(dlg)
         if dlg.result:
@@ -816,9 +844,10 @@ class ExeFlow(tk.Tk):
         if not checked or checked[0] == 0:
             return
         idx = checked[0]
-        cmds = self.playbook.commands
-        cmds[idx-1], cmds[idx] = cmds[idx], cmds[idx-1]
-        self._checked[idx-1], self._checked[idx] = self._checked.get(idx, False), self._checked.get(idx-1, False)
+        c = self.playbook.commands
+        c[idx - 1], c[idx] = c[idx], c[idx - 1]
+        self._checked[idx - 1], self._checked[idx] = (
+            self._checked.get(idx, False), self._checked.get(idx - 1, False))
         self._refresh_cmds()
 
     def _cmd_down(self):
@@ -826,51 +855,52 @@ class ExeFlow(tk.Tk):
         if not checked or checked[-1] >= len(self.playbook.commands) - 1:
             return
         idx = checked[-1]
-        cmds = self.playbook.commands
-        cmds[idx+1], cmds[idx] = cmds[idx], cmds[idx+1]
-        self._checked[idx+1], self._checked[idx] = self._checked.get(idx, False), self._checked.get(idx+1, False)
+        c = self.playbook.commands
+        c[idx + 1], c[idx] = c[idx], c[idx + 1]
+        self._checked[idx + 1], self._checked[idx] = (
+            self._checked.get(idx, False), self._checked.get(idx + 1, False))
         self._refresh_cmds()
 
-    # ── EXECUTION ────────────────────────────
+    # ── EXECUTION ─────────────────────────────────────────────────────────────
 
     def _run_checked(self):
         checked = self._get_checked_indices()
         if not checked:
             self._log("No commands checked. Check at least one.", "warn")
             return
-        cmds = [(self.playbook.commands[i].label,
-                 resolve_command(self.playbook.commands[i].template, self.playbook.get_vars_dict()))
-                for i in checked]
-        self._execute_sequential(cmds)
+        self._execute_sequential(self._build_cmd_list(checked))
 
     def _run_all(self):
-        cmds = [(c.label, resolve_command(c.template, self.playbook.get_vars_dict()))
-                for c in self.playbook.commands]
-        if not cmds:
+        if not self.playbook.commands:
             self._log("No commands in playbook.", "warn")
             return
-        self._execute_sequential(cmds)
+        self._execute_sequential(self._build_cmd_list(range(len(self.playbook.commands))))
 
     def _run_parallel(self):
         checked = self._get_checked_indices()
         if not checked:
-            self._log("No commands checked for parallel run. Check at least one.", "warn")
+            self._log("No commands checked for parallel run.", "warn")
             return
-        cmds = [(self.playbook.commands[i].label,
-                 resolve_command(self.playbook.commands[i].template, self.playbook.get_vars_dict()))
-                for i in checked]
-        self._execute_parallel(cmds)
+        self._execute_parallel(self._build_cmd_list(checked))
 
     def _stop(self):
         self._stop_requested = True
         self._log("── Stop requested ──", "warn")
 
-    def _execute_sequential(self, commands: list[tuple]):
+    def _build_cmd_list(self, indices) -> list[tuple[str, str]]:
+        vd = self.playbook.get_vars_dict()
+        return [(self.playbook.commands[i].label,
+                 resolve_command(self.playbook.commands[i].template, vd))
+                for i in indices]
+
+    def _execute_sequential(self, commands: list[tuple[str, str]]):
         if self._running:
             self._log("Already running. Stop first.", "warn")
             return
         self._running        = True
         self._stop_requested = False
+        # Clear parallel state so output goes to main terminal
+        self._parallel_buffers = {}
 
         def run():
             total = len(commands)
@@ -878,56 +908,51 @@ class ExeFlow(tk.Tk):
                 if self._stop_requested:
                     self.after(0, lambda: self._log("── Stopped by user ──", "warn"))
                     break
-                self.after(0, lambda l=label, n=i+1, t=total: [
+                self.after(0, lambda l=label, n=i + 1, t=total: (
                     self.status_var.set(f"running: {l}"),
-                    self.progress_var.set(f"[{n}/{t}]")
-                ])
+                    self.progress_var.set(f"[{n}/{t}]"),
+                ))
                 self._run_single(label, cmd)
-
             self._running = False
-            self.after(0, lambda: [self.status_var.set("ready"), self.progress_var.set("")])
+            self.after(0, lambda: (self.status_var.set("ready"), self.progress_var.set("")))
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _execute_parallel(self, commands: list[tuple]):
+    def _execute_parallel(self, commands: list[tuple[str, str]]):
         if self._running:
             self._log("Already running. Stop first.", "warn")
             return
-        self._running        = True
-        self._stop_requested = False
+        self._running              = True
+        self._stop_requested       = False
+        self._parallel_buffers     = {label: [] for label, _ in commands}
+        self._parallel_labels      = [label for label, _ in commands]
+        self._parallel_active_label = self._parallel_labels[0] if commands else None
 
-        # Per-command output buffer  {label: [(text, tag), ...]}
-        self._parallel_buffers: dict[str, list] = {label: [] for label, _ in commands}
-        self._parallel_labels: list[str]         = [label for label, _ in commands]
-        self._parallel_active_label: str | None  = self._parallel_labels[0] if commands else None
-
-        self.after(0, self._refresh_parallel_output)
+        self.after(0, self._redraw_parallel_output)
         self.after(0, lambda: self.status_var.set(f"running parallel ({len(commands)} cmds)"))
 
-        def buf_log(label, text, tag="stdout"):
+        def buf_log(label: str, text: str, tag: str = "stdout"):
             self._parallel_buffers[label].append((text, tag))
-            # Refresh display if this label is currently selected
             if self._parallel_active_label == label:
-                self.after(0, self._refresh_parallel_output)
+                self.after(0, self._redraw_parallel_output)
 
         def run():
             threads = []
             for label, cmd in commands:
-                log_fn = lambda t, tg="stdout", l=label: buf_log(l, t, tg)
-                t = threading.Thread(target=self._run_single,
-                                     args=(label, cmd, log_fn), daemon=True)
+                fn = lambda t, tg="stdout", l=label: buf_log(l, t, tg)
+                t  = threading.Thread(target=self._run_single,
+                                      args=(label, cmd, fn), daemon=True)
                 threads.append(t)
                 t.start()
             for t in threads:
                 t.join()
             self._running = False
-            self.after(0, lambda: [self.status_var.set("ready"), self.progress_var.set("")])
+            self.after(0, lambda: (self.status_var.set("ready"), self.progress_var.set("")))
 
         threading.Thread(target=run, daemon=True).start()
 
-    def _refresh_parallel_output(self):
-        """Redraw the output terminal with the buffer of the currently selected parallel command."""
-        label = getattr(self, "_parallel_active_label", None)
+    def _redraw_parallel_output(self):
+        label = self._parallel_active_label
         if label is None:
             return
         buf = self._parallel_buffers.get(label, [])
@@ -942,20 +967,20 @@ class ExeFlow(tk.Tk):
             self.output.see("end")
 
     def _run_single(self, label: str, cmd: str, log_fn=None):
-        """Run one command via login shell and stream output. Called from worker threads."""
+        """Execute one command and stream output. Safe to call from worker threads."""
         log = log_fn or self._log
-        # Resolve Exegol alias → real command if applicable
-        resolved_cmd = resolve_alias(cmd)
+        resolved = resolve_alias(cmd)
 
-        self.after(0, lambda: log(
-            f"┌─ {label} ─────────────────────────────", "header"))
-        # Show original command to user, but run the resolved one
+        self.after(0, lambda: log(f"┌─ {label} ─────────────────────────────", "header"))
         self.after(0, lambda: log(f"$ {cmd}", "warn"))
+
         try:
             proc = subprocess.Popen(
-                ["bash", "-c", resolved_cmd],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1
+                ["bash", "-c", resolved],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
             )
             for line in proc.stdout:
                 if self._stop_requested:
@@ -971,12 +996,12 @@ class ExeFlow(tk.Tk):
         except Exception as ex:
             self.after(0, lambda e=str(ex): log(f"└─ ERROR: {e}", "error"))
 
-    # ── FILE I/O ─────────────────────────────
+    # ── FILE I/O ──────────────────────────────────────────────────────────────
 
     def _pick_playbooks_folder(self):
         folder = filedialog.askdirectory(
             title="Select Playbooks Folder",
-            initialdir=os.path.expanduser("~")
+            initialdir=os.path.expanduser("~"),
         )
         if not folder:
             return
@@ -988,9 +1013,10 @@ class ExeFlow(tk.Tk):
     def _export(self):
         path = filedialog.asksaveasfilename(
             defaultextension=".exeflow",
-            filetypes=[("ExeFlow Playbook", "*.exeflow"), ("JSON", "*.json"), ("All", "*.*")],
+            filetypes=[("ExeFlow Playbook", "*.exeflow"),
+                       ("JSON", "*.json"), ("All", "*.*")],
             initialdir=PLAYBOOKS_DIR or os.path.expanduser("~"),
-            initialfile=self.playbook.name.replace(" ", "_")
+            initialfile=self.playbook.name.replace(" ", "_"),
         )
         if not path:
             return
@@ -1004,7 +1030,8 @@ class ExeFlow(tk.Tk):
     def _import(self):
         path = filedialog.askopenfilename(
             initialdir=PLAYBOOKS_DIR or os.path.expanduser("~"),
-            filetypes=[("ExeFlow Playbook", "*.exeflow"), ("JSON", "*.json"), ("All", "*.*")]
+            filetypes=[("ExeFlow Playbook", "*.exeflow"),
+                       ("JSON", "*.json"), ("All", "*.*")],
         )
         if not path:
             return
@@ -1020,9 +1047,10 @@ class ExeFlow(tk.Tk):
         except Exception as e:
             messagebox.showerror("Import Error", str(e))
 
-# ──────────────────────────────────────────────
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  ENTRY POINT
-# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = ExeFlow()
