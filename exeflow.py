@@ -19,6 +19,58 @@ from datetime import datetime
 PLAYBOOKS_DIR = None
 
 # ──────────────────────────────────────────────
+#  EXEGOL ALIAS RESOLUTION
+#  Parses /opt/.exegol_aliases to resolve tool
+#  names to their real executable paths.
+# ──────────────────────────────────────────────
+EXEGOL_ALIASES: dict[str, str] = {}
+
+def _load_exegol_aliases(path="/opt/.exegol_aliases") -> dict[str, str]:
+    """
+    Parse /opt/.exegol_aliases and return a dict of {alias_name: real_command}.
+    Handles both:
+      alias foo='bar baz'
+      alias foo="bar baz"
+    Ignores functions, comments, blank lines.
+    """
+    aliases = {}
+    if not os.path.exists(path):
+        return aliases
+    try:
+        with open(path, "r", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or line.startswith("function "):
+                    continue
+                # Match: alias NAME='...' or alias NAME="..."
+                m = re.match(r"""^alias\s+([A-Za-z0-9_.@-]+)=['"](.+)['"]$""", line)
+                if m:
+                    aliases[m.group(1)] = m.group(2)
+    except Exception:
+        pass
+    return aliases
+
+EXEGOL_ALIASES = _load_exegol_aliases()
+
+def resolve_alias(cmd: str) -> str:
+    """
+    If the first word of cmd matches a known Exegol alias, replace it
+    with the real command. Otherwise return cmd unchanged.
+    Example: 'wpscan --url ...' -> '/usr/local/rvm/.../wpscan --url ...'
+    """
+    if not EXEGOL_ALIASES:
+        return cmd
+    parts = cmd.strip().split(None, 1)
+    if not parts:
+        return cmd
+    tool = parts[0]
+    rest = parts[1] if len(parts) > 1 else ""
+    if tool in EXEGOL_ALIASES:
+        real = EXEGOL_ALIASES[tool]
+        return f"{real} {rest}".strip() if rest else real
+    return cmd
+
+# ──────────────────────────────────────────────
 #  THEME
 # ──────────────────────────────────────────────
 BG        = "#0d0f0e"
@@ -808,30 +860,16 @@ class ExeFlow(tk.Tk):
     def _run_single(self, label: str, cmd: str, log_fn=None):
         """Run one command via login shell and stream output. Called from worker threads."""
         log = log_fn or self._log
+        # Resolve Exegol alias → real command if applicable
+        resolved_cmd = resolve_alias(cmd)
+
         self.after(0, lambda: log(
             f"┌─ {label} ─────────────────────────────", "header"))
+        # Show original command to user, but run the resolved one
         self.after(0, lambda: log(f"$ {cmd}", "warn"))
         try:
-            # Run via plain bash (no --login, no -i) to avoid:
-            # - job control errors (no TTY)
-            # - /opt/.exegol_aliases syntax error triggered by --login
-            # RVM and wrappers are sourced manually and safely.
-            wrapper = (
-                # RVM: add to PATH and source scripts
-                'export PATH="/usr/local/rvm/bin:$PATH"; '
-                '[ -s /usr/local/rvm/scripts/rvm ] && source /usr/local/rvm/scripts/rvm 2>/dev/null; '
-                # Activate all gem wrappers by scanning rvm gems dirs
-                'for d in /usr/local/rvm/gems/*/wrappers; do export PATH="$d:$PATH"; done; '
-                'for d in /usr/local/rvm/gems/*/bin; do export PATH="$d:$PATH"; done; '
-                'for d in /usr/local/rvm/rubies/*/bin; do export PATH="$d:$PATH"; done; '
-                # Standard system paths
-                'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"; '
-                # Exegol tools
-                'export PATH="/opt/tools/bin:/opt/tools:$PATH"; '
-                f'{cmd}'
-            )
             proc = subprocess.Popen(
-                ["bash", "-c", wrapper],
+                ["bash", "-c", resolved_cmd],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1
             )
