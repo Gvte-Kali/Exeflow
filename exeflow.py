@@ -410,10 +410,16 @@ class ExeFlow(tk.Tk):
         self._select_all_var = tk.BooleanVar(value=False)
 
         # Per-command output buffers  {label: [(text, tag), ...]}
-        self._cmd_buffers:      dict[str, list] = {}
-        self._cmd_order:        list[str]       = []   # ordered list of labels
-        self._active_tab:       str | None      = None
-        self._tab_btns:         dict[str, tk.Label] = {}
+        self._cmd_buffers:      dict[str, list]      = {}
+        self._cmd_order:        list[str]             = []
+        self._active_tab:       str | None            = None
+        self._tab_btns:         dict[str, tk.Label]  = {}
+
+        # Per-tab process tracking for stop/replay
+        self._tab_procs:        dict[str, object]    = {}   # label -> subprocess.Popen | None
+        self._tab_stop_flags:   dict[str, bool]      = {}   # label -> stop requested
+        self._tab_cmds:         dict[str, str]       = {}   # label -> original cmd (for replay)
+        self._is_parallel:      bool                 = False
 
         self._build_ui()
         self._apply_ttk_style()
@@ -757,13 +763,43 @@ class ExeFlow(tk.Tk):
 
     def _init_run_buffers(self, labels: list[str]):
         """Set up per-command output buffers and tab buttons for a new run."""
-        self._cmd_buffers = {label: [] for label in labels}
-        self._cmd_order   = labels
-        self._tab_btns    = {}
+        self._cmd_buffers   = {label: [] for label in labels}
+        self._cmd_order     = labels
+        self._tab_btns      = {}
+        self._tab_procs     = {label: None for label in labels}
+        self._tab_stop_flags = {label: False for label in labels}
 
-        # Clear old tab buttons
+        # Clear old tab widgets
         for w in self._tab_list_frame.winfo_children():
             w.destroy()
+
+        # Action buttons row (Replay + Stop Tab) — shared, updates on tab switch
+        action_row = tk.Frame(self._tab_list_frame, bg=BG2)
+        action_row.pack(fill="x", pady=(4, 2), padx=2)
+
+        self._replay_btn = tk.Button(
+            action_row, text="↺ Replay", bg=BG3, fg=GREEN,
+            activebackground=BG4, activeforeground=GREEN,
+            relief="flat", bd=0, font=FONT_MONO_SM,
+            cursor="hand2", padx=6, pady=3,
+            command=self._replay_active_tab,
+        )
+        self._replay_btn.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        self._replay_btn.bind("<Enter>", lambda e: self._replay_btn.config(bg=BG4))
+        self._replay_btn.bind("<Leave>", lambda e: self._replay_btn.config(bg=BG3))
+
+        self._stop_tab_btn = tk.Button(
+            action_row, text="■ Stop Tab", bg=BG3, fg=RED,
+            activebackground=BG4, activeforeground=RED,
+            relief="flat", bd=0, font=FONT_MONO_SM,
+            cursor="hand2", padx=6, pady=3,
+            command=self._stop_active_tab,
+        )
+        self._stop_tab_btn.pack(side="left", fill="x", expand=True)
+        self._stop_tab_btn.bind("<Enter>", lambda e: self._stop_tab_btn.config(bg=BG4))
+        self._stop_tab_btn.bind("<Leave>", lambda e: self._stop_tab_btn.config(bg=BG3))
+
+        tk.Frame(self._tab_list_frame, bg=BORDER, height=1).pack(fill="x", padx=4, pady=(2, 4))
 
         for label in labels:
             btn = tk.Label(self._tab_list_frame, text=label,
@@ -790,6 +826,47 @@ class ExeFlow(tk.Tk):
             else:
                 btn.config(bg=BG3, fg=WHITE, highlightthickness=0)
         self._redraw_active_tab()
+
+    def _stop_active_tab(self):
+        """Stop the process running on the active tab.
+        Sequential: sets stop flag so the sequential runner skips to next.
+        Parallel: stops only this tab's process, others keep running.
+        """
+        label = self._active_tab
+        if not label:
+            return
+        self._tab_stop_flags[label] = True
+        proc = self._tab_procs.get(label)
+        if proc and proc.poll() is None:
+            proc.terminate()
+        self._tab_log(label, "── Tab stopped ──", "warn")
+        # In sequential mode also advance the runner
+        if not self._is_parallel:
+            self._stop_requested = True
+
+    def _replay_active_tab(self):
+        """Re-run the command associated with the active tab."""
+        label = self._active_tab
+        if not label or label not in self._tab_cmds:
+            return
+        if self._is_parallel:
+            # Re-run this tab independently
+            cmd = self._tab_cmds[label]
+            self._cmd_buffers[label] = []
+            self._tab_stop_flags[label] = False
+            self._redraw_active_tab()
+            threading.Thread(
+                target=self._run_single, args=(label, cmd), daemon=True
+            ).start()
+        else:
+            # Sequential: rebuild and re-run from this tab onward
+            cmd = self._tab_cmds[label]
+            self._cmd_buffers[label] = []
+            self._tab_stop_flags[label] = False
+            self._redraw_active_tab()
+            threading.Thread(
+                target=self._run_single, args=(label, cmd), daemon=True
+            ).start()
 
     def _redraw_active_tab(self):
         label = self._active_tab
@@ -1033,6 +1110,7 @@ class ExeFlow(tk.Tk):
             return
         self._running        = True
         self._stop_requested = False
+        self._is_parallel    = False
 
         labels = [label for label, _ in commands]
         self.after(0, lambda: self._init_run_buffers(labels))
@@ -1060,6 +1138,7 @@ class ExeFlow(tk.Tk):
             return
         self._running        = True
         self._stop_requested = False
+        self._is_parallel    = True
 
         labels = [label for label, _ in commands]
         self.after(0, lambda: self._init_run_buffers(labels))
@@ -1083,6 +1162,10 @@ class ExeFlow(tk.Tk):
         """Execute one command, stream output into its tab buffer."""
         resolved = resolve_alias(cmd)
 
+        # Store original cmd for replay
+        self._tab_cmds[label]       = cmd
+        self._tab_stop_flags[label] = False
+
         self.after(0, lambda: self._tab_log(
             label, f"┌─ {label} ─────────────────────────────", "header"))
         self.after(0, lambda: self._tab_log(label, f"$ {cmd}", "warn"))
@@ -1093,18 +1176,22 @@ class ExeFlow(tk.Tk):
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )
+            self._tab_procs[label] = proc
+
             for line in proc.stdout:
-                if self._stop_requested:
+                if self._stop_requested or self._tab_stop_flags.get(label, False):
                     proc.terminate()
                     break
                 self.after(0, lambda l=line.rstrip(): self._tab_log(label, l, "stdout"))
             proc.wait()
+            self._tab_procs[label] = None
             ec = proc.returncode
             if ec == 0:
                 self.after(0, lambda: self._tab_log(label, "└─ exit 0 ✓", "success"))
             else:
                 self.after(0, lambda c=ec: self._tab_log(label, f"└─ exit {c} ✗", "error"))
         except Exception as ex:
+            self._tab_procs[label] = None
             self.after(0, lambda e=str(ex): self._tab_log(label, f"└─ ERROR: {e}", "error"))
 
     # ── FILE I/O ──────────────────────────────────────────────────────────────
