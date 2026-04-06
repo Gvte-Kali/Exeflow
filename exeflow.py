@@ -512,28 +512,36 @@ class ExeFlow(tk.Tk):
                        bg=BG, fg=WHITE, selectcolor=BG3,
                        activebackground=BG, font=FONT_MONO_SM).pack(side="left")
 
-        cf = tk.Frame(parent, bg=BG3, highlightthickness=1, highlightbackground=BORDER)
-        cf.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        cf_outer = tk.Frame(parent, bg=BG3, highlightthickness=1, highlightbackground=BORDER)
+        cf_outer.pack(fill="both", expand=True, padx=8, pady=(0, 4))
 
-        self.cmd_tree = ttk.Treeview(cf, columns=("chk", "label", "preview"),
-                                     show="headings", selectmode="browse")
-        self.cmd_tree.heading("chk",     text="")
-        self.cmd_tree.heading("label",   text="LABEL")
-        self.cmd_tree.heading("preview", text="COMMAND")
-        self.cmd_tree.column("chk",     width=28,  stretch=False, anchor="center")
-        self.cmd_tree.column("label",   width=110, stretch=False)
-        self.cmd_tree.column("preview", width=200)
-
-        vsb = ttk.Scrollbar(cf, orient="vertical", command=self.cmd_tree.yview)
-        self.cmd_tree.configure(yscrollcommand=vsb.set)
+        self._cmd_canvas = tk.Canvas(cf_outer, bg=BG3, highlightthickness=0, bd=0)
+        vsb = ttk.Scrollbar(cf_outer, orient="vertical", command=self._cmd_canvas.yview)
+        self._cmd_canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
-        self.cmd_tree.pack(fill="both", expand=True)
+        self._cmd_canvas.pack(side="left", fill="both", expand=True)
 
-        self.cmd_tree.bind("<Button-1>",       self._on_cmd_click)
-        self.cmd_tree.bind("<Double-Button-1>", self._on_cmd_double_click)
-        self.cmd_tree.tag_configure("checked",   foreground=GREEN)
-        self.cmd_tree.tag_configure("unchecked", foreground=WHITE)
-        self.cmd_tree.tag_configure("disabled",  foreground=GRAY)
+        self._cmd_rows_frame = tk.Frame(self._cmd_canvas, bg=BG3)
+        self._cmd_canvas_win = self._cmd_canvas.create_window(
+            (0, 0), window=self._cmd_rows_frame, anchor="nw")
+
+        self._cmd_rows_frame.bind("<Configure>", lambda e: self._cmd_canvas.configure(
+            scrollregion=self._cmd_canvas.bbox("all")))
+        self._cmd_canvas.bind("<Configure>", lambda e: self._cmd_canvas.itemconfig(
+            self._cmd_canvas_win, width=e.width))
+
+        # Forward scroll events from canvas and rows to the scrollbar
+        def _fwd_scroll(e):
+            if e.num == 4:   self._cmd_canvas.yview_scroll(-1, "units")
+            elif e.num == 5: self._cmd_canvas.yview_scroll(1,  "units")
+            else:            self._cmd_canvas.yview_scroll(int(-e.delta / 120), "units")
+        self._cmd_canvas.bind("<Button-4>",   _fwd_scroll)
+        self._cmd_canvas.bind("<Button-5>",   _fwd_scroll)
+        self._cmd_canvas.bind("<MouseWheel>", _fwd_scroll)
+        self._scroll_fwd = _fwd_scroll   # store ref so rows can reuse it
+
+        # Legacy attribute so old code that references cmd_tree still finds something
+        self.cmd_tree = None
 
     # ── RIGHT PANEL ───────────────────────────────────────────────────────────
 
@@ -563,8 +571,13 @@ class ExeFlow(tk.Tk):
                        bg=BG, fg=WHITE, selectcolor=BG3,
                        activebackground=BG, font=FONT_MONO_SM).pack(side="left", padx=4)
 
-        term = tk.Frame(parent, bg=BG2, highlightthickness=1, highlightbackground=BORDER)
-        term.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        # ── Output area: main terminal + parallel tabs side panel
+        output_area = tk.Frame(parent, bg=BG)
+        output_area.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        # Main terminal (left, fills most space)
+        term = tk.Frame(output_area, bg=BG2, highlightthickness=1, highlightbackground=BORDER)
+        term.pack(side="left", fill="both", expand=True)
 
         self.output = tk.Text(term, bg=BG2, fg=GREEN, font=FONT_MONO_SM,
                               insertbackground=GREEN, relief="flat", bd=6,
@@ -575,6 +588,33 @@ class ExeFlow(tk.Tk):
         xsb.pack(side="bottom", fill="x")
         ysb.pack(side="right",  fill="y")
         self.output.pack(fill="both", expand=True)
+
+        # ── Parallel tabs side panel (right, hidden until parallel run)
+        self._parallel_panel = tk.Frame(output_area, bg=BG2, width=180)
+        # Not packed yet — shown only when parallel run starts
+
+        # Header
+        tk.Label(self._parallel_panel, text="⟳ PARALLEL", bg=BG2, fg=AMBER,
+                 font=("Monospace", 9, "bold")).pack(fill="x", padx=6, pady=(6, 2))
+        tk.Frame(self._parallel_panel, bg=BORDER, height=1).pack(fill="x", padx=4)
+
+        # Scrollable tab list
+        tab_canvas_frame = tk.Frame(self._parallel_panel, bg=BG2)
+        tab_canvas_frame.pack(fill="both", expand=True)
+
+        self._tab_canvas = tk.Canvas(tab_canvas_frame, bg=BG2, highlightthickness=0, bd=0, width=170)
+        tab_vsb = ttk.Scrollbar(tab_canvas_frame, orient="vertical", command=self._tab_canvas.yview)
+        self._tab_canvas.configure(yscrollcommand=tab_vsb.set)
+        tab_vsb.pack(side="right", fill="y")
+        self._tab_canvas.pack(side="left", fill="both", expand=True)
+
+        self._tab_list_frame = tk.Frame(self._tab_canvas, bg=BG2)
+        self._tab_canvas_win = self._tab_canvas.create_window(
+            (0, 0), window=self._tab_list_frame, anchor="nw")
+        self._tab_list_frame.bind("<Configure>", lambda e: self._tab_canvas.configure(
+            scrollregion=self._tab_canvas.bbox("all")))
+        self._tab_canvas.bind("<Configure>", lambda e: self._tab_canvas.itemconfig(
+            self._tab_canvas_win, width=e.width))
 
         # Standard tags
         self.output.tag_configure("header",  foreground=CYAN, font=("Monospace", 10, "bold"))
@@ -645,67 +685,95 @@ class ExeFlow(tk.Tk):
             self.var_tree.insert("", "end", values=(v.name, v.value, v.description))
 
     def _refresh_cmds(self):
-        # Preserve checkbox states by label
-        old_checked: dict[str, bool] = {}
-        for iid in self.cmd_tree.get_children():
-            vals = self.cmd_tree.item(iid, "values")
-            if len(vals) > 1:
-                old_checked[vals[1]] = (vals[0] == "☑")
+        # Preserve checkbox states by label before rebuild
+        old_checked: dict[str, bool] = {
+            lbl: v for lbl, v in
+            ((self.playbook.commands[i].label, self._checked.get(i, False))
+             for i in range(len(self.playbook.commands)))
+        }
 
-        self.cmd_tree.delete(*self.cmd_tree.get_children())
+        # Destroy existing rows
+        for w in self._cmd_rows_frame.winfo_children():
+            w.destroy()
         self._checked.clear()
+
         vd = self.playbook.get_vars_dict()
 
         for i, cmd in enumerate(self.playbook.commands):
             checked = old_checked.get(cmd.label, False)
             self._checked[i] = checked
+            self._build_cmd_row(i, cmd, checked, vd)
 
-            icon    = "☑" if checked else "☐"
-            preview = resolve_command(cmd.template, vd)
-            short   = (preview[:60] + "…") if len(preview) > 60 else preview
-            tag     = "checked" if checked else ("disabled" if not cmd.enabled else "unchecked")
+        self._cmd_canvas.update_idletasks()
+        self._cmd_canvas.configure(scrollregion=self._cmd_canvas.bbox("all"))
 
-            self.cmd_tree.insert("", "end", iid=str(i),
-                                 values=(icon, cmd.label, short), tags=(tag,))
+    def _build_cmd_row(self, idx: int, cmd, checked: bool, vd: dict):
+        """Build one command row widget."""
+        row_bg = BG3
+        row = tk.Frame(self._cmd_rows_frame, bg=row_bg,
+                       highlightthickness=1, highlightbackground=BORDER)
+        row.pack(fill="x", pady=2, padx=2)
+
+        # Big checkbox button on the left
+        chk_text = "☑" if checked else "☐"
+        chk_color = GREEN if checked else GRAY
+        chk_btn = tk.Label(row, text=chk_text, bg=row_bg, fg=chk_color,
+                           font=("Monospace", 16), cursor="hand2", width=2, anchor="center")
+        chk_btn.pack(side="left", padx=(6, 2), pady=4)
+
+        # Label + resolved command (wrapping)
+        text_frame = tk.Frame(row, bg=row_bg)
+        text_frame.pack(side="left", fill="both", expand=True, pady=4, padx=(0, 6))
+
+        label_color = CYAN if checked else (GRAY if not cmd.enabled else WHITE)
+        lbl = tk.Label(text_frame, text=cmd.label, bg=row_bg, fg=label_color,
+                       font=("Monospace", 9, "bold"), anchor="w", justify="left")
+        lbl.pack(fill="x")
+
+        preview = resolve_command(cmd.template, vd)
+        cmd_lbl = tk.Label(text_frame, text=preview, bg=row_bg, fg=GRAY,
+                           font=("Monospace", 8), anchor="w", justify="left", wraplength=1)
+        cmd_lbl.pack(fill="x")
+
+        # Click handler: toggle checkbox
+        def toggle(event=None, _idx=idx):
+            # In parallel mode: switch output tab instead
+            if self._parallel_buffers and self._running:
+                label = self.playbook.commands[_idx].label
+                if label in self._parallel_buffers:
+                    self._parallel_active_label = label
+                    self._switch_parallel_tab(label)
+                    self.status_var.set(f"viewing: {label}")
+                    return
+            self._checked[_idx] = not self._checked.get(_idx, False)
+            self._refresh_cmds()
+
+        def dbl_click(event=None, _idx=idx):
+            self._edit_command_by_idx(_idx)
+
+        # Bind to all sub-widgets
+        for w in (row, chk_btn, text_frame, lbl, cmd_lbl):
+            w.bind("<Button-1>", toggle)
+            w.bind("<Double-Button-1>", dbl_click)
+            w.bind("<Button-4>",   self._scroll_fwd)
+            w.bind("<Button-5>",   self._scroll_fwd)
+            w.bind("<MouseWheel>", self._scroll_fwd)
+            w.bind("<Enter>", lambda e, r=row: r.config(bg=BG4, highlightbackground=CYAN if self._checked.get(idx, False) else BORDER))
+            w.bind("<Leave>", lambda e, r=row: r.config(bg=BG3, highlightbackground=BORDER))
+
+        # Trigger wraplength update when row resizes
+        def _update_wrap(event, lbl=cmd_lbl):
+            w = event.width - 16
+            if w > 20:
+                lbl.config(wraplength=w)
+        text_frame.bind("<Configure>", _update_wrap)
 
     # ── COMMAND LIST INTERACTIONS ─────────────────────────────────────────────
-
-    def _on_cmd_click(self, event):
-        region = self.cmd_tree.identify_region(event.x, event.y)
-        if region not in ("cell", "tree"):
-            return
-        iid = self.cmd_tree.identify_row(event.y)
-        if not iid:
-            return
-        idx = int(iid)
-
-        # In parallel mode: click switches the output view instead of toggling
-        if self._parallel_buffers and self._running:
-            label = self.playbook.commands[idx].label
-            if label in self._parallel_buffers:
-                self._parallel_active_label = label
-                self._redraw_parallel_output()
-                self.status_var.set(f"viewing: {label}")
-                return
-
-        self._checked[idx] = not self._checked.get(idx, False)
-        self._update_cmd_row(idx)
-
-    def _on_cmd_double_click(self, event):
-        iid = self.cmd_tree.identify_row(event.y)
-        if iid:
-            self._edit_command_by_idx(int(iid))
+    # (click/dbl-click are handled inline in _build_cmd_row)
 
     def _update_cmd_row(self, idx: int):
-        if idx >= len(self.playbook.commands):
-            return
-        cmd     = self.playbook.commands[idx]
-        checked = self._checked.get(idx, False)
-        icon    = "☑" if checked else "☐"
-        preview = resolve_command(cmd.template, self.playbook.get_vars_dict())
-        short   = (preview[:60] + "…") if len(preview) > 60 else preview
-        tag     = "checked" if checked else ("disabled" if not cmd.enabled else "unchecked")
-        self.cmd_tree.item(str(idx), values=(icon, cmd.label, short), tags=(tag,))
+        # Rows are rebuilt on each _refresh_cmds; this is a no-op kept for compat
+        pass
 
     def _toggle_select_all(self):
         val = self._select_all_var.get()
@@ -811,12 +879,8 @@ class ExeFlow(tk.Tk):
         if checked:
             self._edit_command_by_idx(checked[0])
         else:
-            sel = self.cmd_tree.selection()
-            if sel:
-                self._edit_command_by_idx(int(sel[0]))
-            else:
-                messagebox.showinfo("Edit Command",
-                                    "Click a command row to select it, then press Edit.")
+            messagebox.showinfo("Edit Command",
+                                "Check a command first to edit it (or double-click the row).")
 
     def _edit_command_by_idx(self, idx: int):
         dlg = CmdDialog(self, self.playbook.commands[idx], self.playbook.variables)
@@ -899,8 +963,9 @@ class ExeFlow(tk.Tk):
             return
         self._running        = True
         self._stop_requested = False
-        # Clear parallel state so output goes to main terminal
+        # Clear parallel state and hide panel
         self._parallel_buffers = {}
+        self.after(0, lambda: self._parallel_panel.pack_forget())
 
         def run():
             total = len(commands)
@@ -928,7 +993,7 @@ class ExeFlow(tk.Tk):
         self._parallel_labels      = [label for label, _ in commands]
         self._parallel_active_label = self._parallel_labels[0] if commands else None
 
-        self.after(0, self._redraw_parallel_output)
+        self.after(0, self._show_parallel_panel)
         self.after(0, lambda: self.status_var.set(f"running parallel ({len(commands)} cmds)"))
 
         def buf_log(label: str, text: str, tag: str = "stdout"):
@@ -948,10 +1013,53 @@ class ExeFlow(tk.Tk):
                 t.join()
             self._running = False
             self.after(0, lambda: (self.status_var.set("ready"), self.progress_var.set("")))
+            # Keep panel visible after completion so user can review
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _show_parallel_panel(self):
+        """Build tab buttons and show the parallel side panel."""
+        # Clear old tabs
+        for w in self._tab_list_frame.winfo_children():
+            w.destroy()
+        self._tab_btns: dict[str, tk.Label] = {}
+
+        for label in self._parallel_labels:
+            btn = tk.Label(self._tab_list_frame, text=label, bg=BG3, fg=WHITE,
+                           font=FONT_MONO_SM, anchor="w", cursor="hand2",
+                           padx=8, pady=6, wraplength=155, justify="left")
+            btn.pack(fill="x", pady=1, padx=2)
+            self._tab_btns[label] = btn
+
+            def _click(e, l=label):
+                self._parallel_active_label = l
+                self._switch_parallel_tab(l)
+                self._redraw_parallel_output()
+            btn.bind("<Button-1>", _click)
+
+        # Show panel (pack after terminal)
+        self._parallel_panel.pack(side="left", fill="y", padx=(4, 0))
+        self._parallel_panel.config(width=180)
+
+        # Activate first tab
+        if self._parallel_labels:
+            self._switch_parallel_tab(self._parallel_labels[0])
+            self._redraw_parallel_output()
+
+    def _switch_parallel_tab(self, active_label: str):
+        """Highlight the active tab button, dim the rest."""
+        if not hasattr(self, "_tab_btns"):
+            return
+        for label, btn in self._tab_btns.items():
+            if label == active_label:
+                btn.config(bg=BG4, fg=AMBER,
+                           highlightthickness=1, highlightbackground=AMBER)
+            else:
+                btn.config(bg=BG3, fg=WHITE,
+                           highlightthickness=0)
+
     def _redraw_parallel_output(self):
+        """Redraw main output with the buffer of the active parallel command."""
         label = self._parallel_active_label
         if label is None:
             return
