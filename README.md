@@ -47,7 +47,7 @@ The idea: stop retyping the same nmap/gobuster/ffuf commands on every engagement
 ### One-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Gvte-Kali/Exeflow/main/install.sh | sudo bash
 ```
 
 ### Manual
