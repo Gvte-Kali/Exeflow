@@ -16,7 +16,32 @@ from datetime import datetime
 # ──────────────────────────────────────────────
 #  PATHS
 # ──────────────────────────────────────────────
-PLAYBOOKS_DIR = None  # Set by user at runtime via "📁 Playbooks Folder" button
+PLAYBOOKS_DIR = None
+
+# ──────────────────────────────────────────────
+#  FULL PATH — load user shell PATH so tools like wpscan, ruby gems etc. are found
+# ──────────────────────────────────────────────
+def _get_full_env():
+    """Return an env dict with the full PATH sourced from the user's login shell."""
+    try:
+        result = subprocess.run(
+            ["bash", "-lc", "echo $PATH"],
+            capture_output=True, text=True, timeout=5
+        )
+        login_path = result.stdout.strip()
+        if login_path:
+            env = os.environ.copy()
+            # Merge login PATH with current PATH, deduplicated
+            current_dirs = env.get("PATH", "").split(":")
+            login_dirs   = login_path.split(":")
+            merged = list(dict.fromkeys(login_dirs + current_dirs))
+            env["PATH"] = ":".join(merged)
+            return env
+    except Exception:
+        pass
+    return os.environ.copy()
+
+FULL_ENV = _get_full_env()
 
 # ──────────────────────────────────────────────
 #  THEME
@@ -260,11 +285,11 @@ class ExeFlow(tk.Tk):
         self.geometry("1280x820")
         self.minsize(900, 600)
 
-        self.playbook         = Playbook("New Playbook")
-        self._running         = False
-        self._stop_requested  = False
-        self._check_vars: dict[int, tk.BooleanVar] = {}
-        self._select_all_var  = tk.BooleanVar(value=False)
+        self.playbook        = Playbook("New Playbook")
+        self._running        = False
+        self._stop_requested = False
+        # checked state stored by command index: {idx: bool}
+        self._checked: dict[int, bool] = {}
 
         self._build_ui()
         self._refresh_all()
@@ -291,11 +316,10 @@ class ExeFlow(tk.Tk):
         name_entry.pack(side="left")
         name_entry.bind("<FocusOut>", lambda e: setattr(self.playbook, "name", self.pb_name_var.get()))
 
-        # Right-side buttons (packed right-to-left)
         for text, cmd, color in [
-            ("⬇ Export",            self._export,                WHITE),
-            ("⬆ Import",            self._import,                WHITE),
-            ("📁 Playbooks Folder",  self._pick_playbooks_folder, WHITE),
+            ("⬇ Export",           self._export,                WHITE),
+            ("⬆ Import",           self._import,                WHITE),
+            ("📁 Playbooks Folder", self._pick_playbooks_folder, WHITE),
         ]:
             styled_btn(topbar, text, cmd, color=color).pack(side="right", padx=3, pady=6)
 
@@ -309,7 +333,7 @@ class ExeFlow(tk.Tk):
         tk.Label(self.status_bar, textvariable=self.progress_var,
                  bg=BG2, fg=AMBER, font=FONT_MONO_SM, padx=8).pack(side="right")
 
-        # MAIN PANES — 50/50 enforced after draw
+        # MAIN PANES
         self._paned = tk.PanedWindow(self, orient="horizontal", bg=BORDER,
                                      sashwidth=5, relief="flat", bd=0)
         self._paned.pack(fill="both", expand=True)
@@ -321,7 +345,6 @@ class ExeFlow(tk.Tk):
 
         self._build_left(left)
         self._build_right(right)
-
         self.after(100, self._set_sash_center)
 
     def _set_sash_center(self):
@@ -346,9 +369,8 @@ class ExeFlow(tk.Tk):
         vf = tk.Frame(parent, bg=BG3, highlightthickness=1, highlightbackground=BORDER)
         vf.pack(fill="x", padx=8, pady=(0, 4))
 
-        cols = ("Name", "Value", "Desc")
-        self.var_tree = ttk.Treeview(vf, columns=cols, show="headings",
-                                     height=8, selectmode="browse")
+        self.var_tree = ttk.Treeview(vf, columns=("Name","Value","Desc"),
+                                     show="headings", height=8, selectmode="browse")
         self.var_tree.heading("Name",  text="NAME")
         self.var_tree.heading("Value", text="VALUE")
         self.var_tree.heading("Desc",  text="DESCRIPTION")
@@ -366,46 +388,45 @@ class ExeFlow(tk.Tk):
 
         cmd_toolbar = tk.Frame(parent, bg=BG)
         cmd_toolbar.pack(fill="x", padx=8, pady=(0, 2))
-        styled_btn(cmd_toolbar, "+ Add",  self._add_command,  color=CYAN, pady=2).pack(side="left")
+        styled_btn(cmd_toolbar, "+ Add",  self._add_command,  color=CYAN,  pady=2).pack(side="left")
         styled_btn(cmd_toolbar, "✎ Edit", self._edit_command, color=WHITE, pady=2).pack(side="left", padx=4)
-        styled_btn(cmd_toolbar, "✗ Del",  self._del_command,  color=RED,  pady=2).pack(side="left")
-        styled_btn(cmd_toolbar, "↑", self._cmd_up,   color=WHITE, pady=2, width=2).pack(side="left", padx=(8, 2))
+        styled_btn(cmd_toolbar, "✗ Del",  self._del_command,  color=RED,   pady=2).pack(side="left")
+        styled_btn(cmd_toolbar, "↑", self._cmd_up,   color=WHITE, pady=2, width=2).pack(side="left", padx=(8,2))
         styled_btn(cmd_toolbar, "↓", self._cmd_down, color=WHITE, pady=2, width=2).pack(side="left")
 
         # Select-all row
         sel_row = tk.Frame(parent, bg=BG)
-        sel_row.pack(fill="x", padx=8, pady=(0, 4))
+        sel_row.pack(fill="x", padx=8, pady=(2, 2))
+        self._select_all_var = tk.BooleanVar(value=False)
         tk.Checkbutton(sel_row, text="Select / Deselect All",
                        variable=self._select_all_var,
                        command=self._toggle_select_all,
                        bg=BG, fg=WHITE, selectcolor=BG3,
                        activebackground=BG, font=FONT_MONO_SM).pack(side="left")
 
-        # Scrollable command list
-        cf_outer = tk.Frame(parent, bg=BG3, highlightthickness=1, highlightbackground=BORDER)
-        cf_outer.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+        # ── Command list via Treeview (reliable on all Tkinter versions)
+        cf = tk.Frame(parent, bg=BG3, highlightthickness=1, highlightbackground=BORDER)
+        cf.pack(fill="both", expand=True, padx=8, pady=(0, 4))
 
-        self._cmd_canvas = tk.Canvas(cf_outer, bg=BG3, highlightthickness=0, bd=0)
-        vsb = ttk.Scrollbar(cf_outer, orient="vertical", command=self._cmd_canvas.yview)
-        self._cmd_canvas.configure(yscrollcommand=vsb.set)
+        self.cmd_tree = ttk.Treeview(cf, columns=("chk", "label", "preview"),
+                                     show="headings", selectmode="browse")
+        self.cmd_tree.heading("chk",     text="")
+        self.cmd_tree.heading("label",   text="LABEL")
+        self.cmd_tree.heading("preview", text="COMMAND")
+        self.cmd_tree.column("chk",     width=28,  stretch=False, anchor="center")
+        self.cmd_tree.column("label",   width=110, stretch=False)
+        self.cmd_tree.column("preview", width=200)
+
+        vsb = ttk.Scrollbar(cf, orient="vertical", command=self.cmd_tree.yview)
+        self.cmd_tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
-        self._cmd_canvas.pack(side="left", fill="both", expand=True)
+        self.cmd_tree.pack(fill="both", expand=True)
 
-        self._cmd_list_frame = tk.Frame(self._cmd_canvas, bg=BG3)
-        self._cmd_canvas_window = self._cmd_canvas.create_window(
-            (0, 0), window=self._cmd_list_frame, anchor="nw"
-        )
-        self._cmd_list_frame.bind("<Configure>", lambda e: self._cmd_canvas.configure(
-            scrollregion=self._cmd_canvas.bbox("all")))
-        self._cmd_canvas.bind("<Configure>", lambda e: self._cmd_canvas.itemconfig(
-            self._cmd_canvas_window, width=e.width))
-
-        # Mousewheel
-        for widget in (self._cmd_canvas, self._cmd_list_frame):
-            widget.bind("<Button-4>",   lambda e: self._cmd_canvas.yview_scroll(-1, "units"))
-            widget.bind("<Button-5>",   lambda e: self._cmd_canvas.yview_scroll(1,  "units"))
-            widget.bind("<MouseWheel>", lambda e: self._cmd_canvas.yview_scroll(
-                int(-1 * e.delta / 120), "units"))
+        self.cmd_tree.bind("<Button-1>",     self._on_cmd_click)
+        self.cmd_tree.bind("<Double-Button-1>", self._on_cmd_double_click)
+        self.cmd_tree.tag_configure("checked",   foreground=GREEN)
+        self.cmd_tree.tag_configure("unchecked", foreground=WHITE)
+        self.cmd_tree.tag_configure("disabled",  foreground=GRAY)
 
     # ── RIGHT PANEL ──────────────────────────
 
@@ -415,21 +436,20 @@ class ExeFlow(tk.Tk):
         out_toolbar = tk.Frame(parent, bg=BG)
         out_toolbar.pack(fill="x", padx=8, pady=(0, 4))
 
-        # Run controls
-        styled_btn(out_toolbar, "▶ Run Checked", self._run_checked, color=GREEN, pady=2).pack(side="left")
-        styled_btn(out_toolbar, "▶▶ Run All",    self._run_all,     color=GREEN, pady=2).pack(side="left", padx=4)
-        styled_btn(out_toolbar, "■ Stop",         self._stop,        color=RED,   pady=2).pack(side="left")
+        styled_btn(out_toolbar, "▶ Run Checked",   self._run_checked,  color=GREEN, pady=2).pack(side="left")
+        styled_btn(out_toolbar, "▶▶ Run All",       self._run_all,      color=GREEN, pady=2).pack(side="left", padx=4)
+        styled_btn(out_toolbar, "⟳ Run Parallel",   self._run_parallel, color=AMBER, pady=2).pack(side="left")
+        styled_btn(out_toolbar, "■ Stop",            self._stop,         color=RED,   pady=2).pack(side="left", padx=4)
 
-        tk.Frame(out_toolbar, bg=BORDER, width=1).pack(side="left", fill="y", padx=8, pady=2)
+        tk.Frame(out_toolbar, bg=BORDER, width=1).pack(side="left", fill="y", padx=6, pady=2)
 
-        # Output controls
         styled_btn(out_toolbar, "💾 Save Output", self._save_output,  color=CYAN,  pady=2).pack(side="left")
         styled_btn(out_toolbar, "⌫ Clear",        self._clear_output, color=WHITE, pady=2).pack(side="left", padx=4)
 
         self.autoscroll_var = tk.BooleanVar(value=True)
         tk.Checkbutton(out_toolbar, text="Auto-scroll", variable=self.autoscroll_var,
                        bg=BG, fg=WHITE, selectcolor=BG3, activebackground=BG,
-                       font=FONT_MONO_SM).pack(side="left", padx=(8,0))
+                       font=FONT_MONO_SM).pack(side="left", padx=(6,0))
 
         self.timestamp_var = tk.BooleanVar(value=True)
         tk.Checkbutton(out_toolbar, text="Timestamps", variable=self.timestamp_var,
@@ -463,12 +483,12 @@ class ExeFlow(tk.Tk):
         style.theme_use("clam")
         style.configure("Treeview",
                         background=BG3, foreground=WHITE, fieldbackground=BG3,
-                        borderwidth=0, rowheight=22, font=FONT_MONO_SM)
+                        borderwidth=0, rowheight=24, font=FONT_MONO_SM)
         style.configure("Treeview.Heading",
                         background=BG4, foreground=GRAY, borderwidth=0, font=FONT_MONO_SM)
         style.map("Treeview",
-                  background=[("selected", GREEN_MUT)],
-                  foreground=[("selected", GREEN)])
+                  background=[("selected", BG4)],
+                  foreground=[("selected", WHITE)])
         style.configure("Vertical.TScrollbar",
                         background=BG3, troughcolor=BG2, borderwidth=0, arrowsize=12)
         style.configure("Horizontal.TScrollbar",
@@ -490,62 +510,70 @@ class ExeFlow(tk.Tk):
             self.var_tree.insert("", "end", values=(v.name, v.value, v.description))
 
     def _refresh_cmds(self):
-        # Preserve checkbox states by label
+        # Preserve checked state by label before rebuild
         old_checked = {}
-        for idx, bvar in self._check_vars.items():
-            if idx < len(self.playbook.commands):
-                old_checked[self.playbook.commands[idx].label] = bvar.get()
+        for iid in self.cmd_tree.get_children():
+            vals = self.cmd_tree.item(iid, "values")
+            label = vals[1] if len(vals) > 1 else ""
+            old_checked[label] = (vals[0] == "☑")
 
-        for w in self._cmd_list_frame.winfo_children():
-            w.destroy()
-        self._check_vars.clear()
+        self.cmd_tree.delete(*self.cmd_tree.get_children())
+        self._checked.clear()
 
         vars_dict = self.playbook.get_vars_dict()
 
         for i, cmd in enumerate(self.playbook.commands):
-            bvar = tk.BooleanVar(value=old_checked.get(cmd.label, False))
-            self._check_vars[i] = bvar
+            is_checked = old_checked.get(cmd.label, False)
+            self._checked[i] = is_checked
 
-            row = tk.Frame(self._cmd_list_frame, bg=BG3)
-            row.pack(fill="x", pady=1)
+            chk_icon = "☑" if is_checked else "☐"
+            preview  = resolve_command(cmd.template, vars_dict)
+            short    = preview[:60] + "…" if len(preview) > 60 else preview
 
-            cb = tk.Checkbutton(row, variable=bvar, bg=BG3, activebackground=BG3,
-                                 selectcolor=BG4, bd=0, highlightthickness=0)
-            cb.pack(side="left", padx=(4, 0))
+            tag = "checked" if is_checked else ("disabled" if not cmd.enabled else "unchecked")
+            self.cmd_tree.insert("", "end", iid=str(i),
+                                 values=(chk_icon, cmd.label, short),
+                                 tags=(tag,))
 
-            label_color = WHITE if cmd.enabled else GRAY
-            preview = resolve_command(cmd.template, vars_dict)
-            short   = preview[:55] + "…" if len(preview) > 55 else preview
-            display = f"  {cmd.label}  ─  {short}"
+    # ── CHECKBOX INTERACTIONS ────────────────
 
-            lbl = tk.Label(row, text=display, bg=BG3, fg=label_color,
-                           font=FONT_MONO_SM, anchor="w", cursor="hand2")
-            lbl.pack(side="left", fill="x", expand=True)
+    def _on_cmd_click(self, event):
+        """Toggle checkbox on click anywhere on a row."""
+        region = self.cmd_tree.identify_region(event.x, event.y)
+        if region not in ("cell", "tree"):
+            return
+        iid = self.cmd_tree.identify_row(event.y)
+        if not iid:
+            return
+        idx = int(iid)
+        self._checked[idx] = not self._checked.get(idx, False)
+        self._update_cmd_row(idx)
 
-            lbl.bind("<Button-1>",        lambda e, b=bvar: b.set(not b.get()))
-            lbl.bind("<Double-Button-1>", lambda e, idx=i: self._edit_command_by_idx(idx))
+    def _on_cmd_double_click(self, event):
+        iid = self.cmd_tree.identify_row(event.y)
+        if iid:
+            self._edit_command_by_idx(int(iid))
 
-            for widget in (row, lbl, cb):
-                widget.bind("<Enter>", lambda e, r=row: r.config(bg=BG4))
-                widget.bind("<Leave>", lambda e, r=row: r.config(bg=BG3))
-                # Forward mousewheel from rows to canvas
-                widget.bind("<Button-4>",   lambda e: self._cmd_canvas.yview_scroll(-1, "units"))
-                widget.bind("<Button-5>",   lambda e: self._cmd_canvas.yview_scroll(1,  "units"))
-                widget.bind("<MouseWheel>", lambda e: self._cmd_canvas.yview_scroll(
-                    int(-1 * e.delta / 120), "units"))
-
-        self._cmd_canvas.update_idletasks()
-        self._cmd_canvas.configure(scrollregion=self._cmd_canvas.bbox("all"))
-
-    # ── SELECT ALL ───────────────────────────
+    def _update_cmd_row(self, idx):
+        if idx >= len(self.playbook.commands):
+            return
+        cmd       = self.playbook.commands[idx]
+        is_checked = self._checked.get(idx, False)
+        chk_icon  = "☑" if is_checked else "☐"
+        vars_dict = self.playbook.get_vars_dict()
+        preview   = resolve_command(cmd.template, vars_dict)
+        short     = preview[:60] + "…" if len(preview) > 60 else preview
+        tag = "checked" if is_checked else ("disabled" if not cmd.enabled else "unchecked")
+        self.cmd_tree.item(str(idx), values=(chk_icon, cmd.label, short), tags=(tag,))
 
     def _toggle_select_all(self):
         val = self._select_all_var.get()
-        for bvar in self._check_vars.values():
-            bvar.set(val)
+        for idx in range(len(self.playbook.commands)):
+            self._checked[idx] = val
+            self._update_cmd_row(idx)
 
     def _get_checked_indices(self) -> list[int]:
-        return [i for i, bvar in self._check_vars.items() if bvar.get()]
+        return [i for i, v in self._checked.items() if v]
 
     # ── OUTPUT ───────────────────────────────
 
@@ -632,7 +660,12 @@ class ExeFlow(tk.Tk):
     def _edit_command(self):
         checked = self._get_checked_indices()
         if not checked:
-            messagebox.showinfo("Edit Command", "Check a command first to edit it.")
+            # fallback: use treeview selection
+            sel = self.cmd_tree.selection()
+            if sel:
+                self._edit_command_by_idx(int(sel[0]))
+            else:
+                messagebox.showinfo("Edit Command", "Click a command row to select it, then press Edit.")
             return
         self._edit_command_by_idx(checked[0])
 
@@ -654,6 +687,7 @@ class ExeFlow(tk.Tk):
         if messagebox.askyesno("Delete Commands", msg):
             for i in sorted(checked, reverse=True):
                 del self.playbook.commands[i]
+            self._checked.clear()
             self._refresh_cmds()
 
     def _cmd_up(self):
@@ -663,9 +697,8 @@ class ExeFlow(tk.Tk):
         idx = checked[0]
         cmds = self.playbook.commands
         cmds[idx-1], cmds[idx] = cmds[idx], cmds[idx-1]
+        self._checked[idx-1], self._checked[idx] = self._checked.get(idx, False), self._checked.get(idx-1, False)
         self._refresh_cmds()
-        if idx-1 in self._check_vars:
-            self._check_vars[idx-1].set(True)
 
     def _cmd_down(self):
         checked = self._get_checked_indices()
@@ -674,9 +707,8 @@ class ExeFlow(tk.Tk):
         idx = checked[-1]
         cmds = self.playbook.commands
         cmds[idx+1], cmds[idx] = cmds[idx], cmds[idx+1]
+        self._checked[idx+1], self._checked[idx] = self._checked.get(idx, False), self._checked.get(idx+1, False)
         self._refresh_cmds()
-        if idx+1 in self._check_vars:
-            self._check_vars[idx+1].set(True)
 
     # ── EXECUTION ────────────────────────────
 
@@ -688,7 +720,7 @@ class ExeFlow(tk.Tk):
         cmds = [(self.playbook.commands[i].label,
                  resolve_command(self.playbook.commands[i].template, self.playbook.get_vars_dict()))
                 for i in checked]
-        self._execute_commands(cmds)
+        self._execute_sequential(cmds)
 
     def _run_all(self):
         cmds = [(c.label, resolve_command(c.template, self.playbook.get_vars_dict()))
@@ -696,13 +728,23 @@ class ExeFlow(tk.Tk):
         if not cmds:
             self._log("No commands in playbook.", "warn")
             return
-        self._execute_commands(cmds)
+        self._execute_sequential(cmds)
+
+    def _run_parallel(self):
+        checked = self._get_checked_indices()
+        if not checked:
+            self._log("No commands checked for parallel run. Check at least one.", "warn")
+            return
+        cmds = [(self.playbook.commands[i].label,
+                 resolve_command(self.playbook.commands[i].template, self.playbook.get_vars_dict()))
+                for i in checked]
+        self._execute_parallel(cmds)
 
     def _stop(self):
         self._stop_requested = True
         self._log("── Stop requested ──", "warn")
 
-    def _execute_commands(self, commands: list[tuple]):
+    def _execute_sequential(self, commands: list[tuple]):
         if self._running:
             self._log("Already running. Stop first.", "warn")
             return
@@ -715,38 +757,63 @@ class ExeFlow(tk.Tk):
                 if self._stop_requested:
                     self.after(0, lambda: self._log("── Stopped by user ──", "warn"))
                     break
-
                 self.after(0, lambda l=label, n=i+1, t=total: [
                     self.status_var.set(f"running: {l}"),
                     self.progress_var.set(f"[{n}/{t}]")
                 ])
-                self.after(0, lambda l=label: self._log(
-                    f"┌─ {l} ─────────────────────────────", "header"))
-                self.after(0, lambda c=cmd: self._log(f"$ {c}", "warn"))
-
-                try:
-                    proc = subprocess.Popen(
-                        cmd, shell=True, stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT, text=True, bufsize=1
-                    )
-                    for line in proc.stdout:
-                        if self._stop_requested:
-                            proc.terminate()
-                            break
-                        self.after(0, lambda l=line.rstrip(): self._log(l, "stdout"))
-                    proc.wait()
-                    ec = proc.returncode
-                    if ec == 0:
-                        self.after(0, lambda: self._log("└─ exit 0 ✓", "success"))
-                    else:
-                        self.after(0, lambda c=ec: self._log(f"└─ exit {c} ✗", "error"))
-                except Exception as ex:
-                    self.after(0, lambda e=str(ex): self._log(f"└─ ERROR: {e}", "error"))
+                self._run_single(label, cmd)
 
             self._running = False
             self.after(0, lambda: [self.status_var.set("ready"), self.progress_var.set("")])
 
         threading.Thread(target=run, daemon=True).start()
+
+    def _execute_parallel(self, commands: list[tuple]):
+        if self._running:
+            self._log("Already running. Stop first.", "warn")
+            return
+        self._running        = True
+        self._stop_requested = False
+        self.after(0, lambda: self.status_var.set(f"running parallel ({len(commands)} cmds)"))
+
+        def run():
+            threads = []
+            for label, cmd in commands:
+                t = threading.Thread(target=self._run_single, args=(label, cmd), daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+            self._running = False
+            self.after(0, lambda: [self.status_var.set("ready"), self.progress_var.set("")])
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _run_single(self, label: str, cmd: str):
+        """Run one command and stream output. Called from worker threads."""
+        self.after(0, lambda: self._log(
+            f"┌─ {label} ─────────────────────────────", "header"))
+        self.after(0, lambda: self._log(f"$ {cmd}", "warn"))
+        try:
+            proc = subprocess.Popen(
+                cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+                env=FULL_ENV                          # ← full PATH
+            )
+            for line in proc.stdout:
+                if self._stop_requested:
+                    proc.terminate()
+                    break
+                self.after(0, lambda l=line.rstrip(): self._log(l, "stdout"))
+            proc.wait()
+            ec = proc.returncode
+            if ec == 0:
+                self.after(0, lambda: self._log("└─ exit 0 ✓", "success"))
+            else:
+                self.after(0, lambda c=ec: self._log(f"└─ exit {c} ✗", "error"))
+        except Exception as ex:
+            self.after(0, lambda e=str(ex): self._log(f"└─ ERROR: {e}", "error"))
 
     # ── FILE I/O ─────────────────────────────
 
@@ -790,6 +857,7 @@ class ExeFlow(tk.Tk):
                 data = json.load(f)
             self.playbook = Playbook.from_dict(data)
             self.pb_name_var.set(self.playbook.name)
+            self._checked.clear()
             self._select_all_var.set(False)
             self._refresh_all()
             self._log(f"Playbook imported ← {path}", "success")
