@@ -19,27 +19,93 @@ from datetime import datetime
 PLAYBOOKS_DIR = None
 
 # ──────────────────────────────────────────────
-#  FULL PATH — load user shell PATH so tools like wpscan, ruby gems etc. are found
+#  FULL PATH — robust multi-strategy PATH resolution for Exegol and other distros
 # ──────────────────────────────────────────────
 def _get_full_env():
-    """Return an env dict with the full PATH sourced from the user's login shell."""
-    try:
-        result = subprocess.run(
-            ["bash", "-lc", "echo $PATH"],
-            capture_output=True, text=True, timeout=5
-        )
-        login_path = result.stdout.strip()
-        if login_path:
-            env = os.environ.copy()
-            # Merge login PATH with current PATH, deduplicated
-            current_dirs = env.get("PATH", "").split(":")
-            login_dirs   = login_path.split(":")
-            merged = list(dict.fromkeys(login_dirs + current_dirs))
-            env["PATH"] = ":".join(merged)
-            return env
-    except Exception:
-        pass
-    return os.environ.copy()
+    """
+    Build the most complete PATH possible by combining:
+    1. Current environment PATH
+    2. Login shell PATH  (bash -lc / zsh -lc)
+    3. Interactive shell PATH  (bash -ilc)
+    4. Well-known bin directories (Exegol, rvm, gem, pipx, cargo, go, pyenv...)
+    All deduplicated, non-existent dirs filtered out.
+    """
+    env = os.environ.copy()
+    collected = env.get("PATH", "").split(":")
+
+    # Strategy 1 & 2: try multiple shell invocations
+    shell_cmds = [
+        ["bash", "--login",      "-c", "echo $PATH"],
+        ["bash", "--login", "-i", "-c", "echo $PATH"],
+        ["zsh",  "--login",      "-c", "echo $PATH"],
+        ["sh",   "-lc",                "echo $PATH"],
+    ]
+    for cmd in shell_cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            for p in r.stdout.strip().split(":"):
+                if p and p not in collected:
+                    collected.append(p)
+        except Exception:
+            continue
+
+    # Strategy 3: hardcoded well-known paths that Exegol/tools use
+    home = os.path.expanduser("~")
+    known = [
+        # System
+        "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin",
+        # Exegol specific
+        "/opt/tools/bin",
+        "/opt/tools",
+        "/root/go/bin",
+        # Ruby / RVM / Gems (wpscan lives here)
+        "/usr/local/rvm/bin",
+        "/usr/local/rvm/rubies/default/bin",
+        "/usr/local/rvm/gems/default/bin",
+        "/usr/local/rvm/gems/default@global/bin",
+        f"{home}/.rvm/bin",
+        f"{home}/.rvm/rubies/default/bin",
+        f"{home}/.rvm/gems/default/bin",
+        # RVM dynamic — scan for any ruby version installed
+        *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/gems").glob("*/bin")]
+          if __import__('pathlib').Path("/usr/local/rvm/gems").exists() else []),
+        *([str(p) for p in __import__('pathlib').Path("/usr/local/rvm/rubies").glob("*/bin")]
+          if __import__('pathlib').Path("/usr/local/rvm/rubies").exists() else []),
+        # Python tools
+        f"{home}/.local/bin",
+        "/usr/local/bin",
+        f"{home}/.pyenv/shims",
+        f"{home}/.pyenv/bin",
+        # Node / npm
+        f"{home}/.npm-global/bin",
+        "/usr/local/lib/nodejs/bin",
+        # Go
+        "/usr/local/go/bin",
+        f"{home}/go/bin",
+        # Cargo / Rust
+        f"{home}/.cargo/bin",
+        # Snap
+        "/snap/bin",
+        # pipx
+        f"{home}/.local/pipx/venvs",
+    ]
+    for p in known:
+        if p and p not in collected:
+            collected.append(p)
+
+    # Filter to only existing directories, keep order
+    filtered = [p for p in collected if p and os.path.isdir(p)]
+    # Deduplicate preserving order
+    seen = set()
+    deduped = []
+    for p in filtered:
+        rp = os.path.realpath(p)
+        if rp not in seen:
+            seen.add(rp)
+            deduped.append(p)
+
+    env["PATH"] = ":".join(deduped)
+    return env
 
 FULL_ENV = _get_full_env()
 
