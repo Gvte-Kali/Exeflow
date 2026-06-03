@@ -14,8 +14,9 @@ import re
 import subprocess
 import threading
 import tkinter as tk
+import easygui
 from datetime import datetime
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -766,19 +767,19 @@ class ExeFlow(tk.Tk):
         row = tk.Frame(self._cmd_rows_frame, bg=BG3,
                        highlightthickness=1,
                        highlightbackground=CYAN if checked else BORDER,
-                       padx=6, pady=6)
-        row.pack(fill="x", pady=4, padx=4)
+                       padx=2, pady=1)
+        row.pack(fill="x", pady=0, padx=1)
 
         # Checkbox
         chk_lbl = tk.Label(row, text="☑" if checked else "☐",
                            bg=BG3, fg=GREEN if checked else GRAY,
                            font=("Monospace", 16), cursor="hand2",
                            width=2, anchor="center")
-        chk_lbl.pack(side="left", padx=(8, 4), pady=8)
+        chk_lbl.pack(side="left", padx=(4, 1), pady=1)
 
         # Text content
         txt_frame = tk.Frame(row, bg=BG3)
-        txt_frame.pack(side="left", fill="both", expand=True, pady=8, padx=(0, 12))
+        txt_frame.pack(side="left", fill="both", expand=True, pady=1, padx=(0, 4))
 
         label_color = CYAN if checked else (GRAY if not cmd.enabled else WHITE)
         lbl = tk.Label(txt_frame, text=cmd.label, bg=BG3, fg=label_color,
@@ -1135,11 +1136,9 @@ class ExeFlow(tk.Tk):
         if not self._cmd_buffers:
             messagebox.showinfo("Save All", "No output to save.")
             return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text file", "*.txt"), ("Log file", "*.log"), ("All", "*.*")],
-            initialdir=PLAYBOOKS_DIR or os.path.expanduser("~"),
-            initialfile=f"exeflow_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        path = easygui.filesavebox(
+            default=f"exeflow_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            filetypes=["*.txt", "*.log"]
         )
         if not path:
             return
@@ -1155,11 +1154,9 @@ class ExeFlow(tk.Tk):
             messagebox.showerror("Save Error", str(e))
 
     def _save_buffer(self, buf: list, default_name: str):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".txt",
-            filetypes=[("Text file", "*.txt"), ("Log file", "*.log"), ("All", "*.*")],
-            initialdir=PLAYBOOKS_DIR or os.path.expanduser("~"),
-            initialfile=f"{default_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        path = easygui.filesavebox(
+            default=f"{default_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            filetypes=["*.txt", "*.log"]
         )
         if not path:
             return
@@ -1295,9 +1292,9 @@ class ExeFlow(tk.Tk):
     # ── FILE I/O ──────────────────────────────────────────────────────────────
 
     def _pick_playbooks_folder(self):
-        folder = filedialog.askdirectory(
+        folder = easygui.diropenbox(
             title="Select Playbooks Folder",
-            initialdir=os.path.expanduser("~"),
+            default=os.path.expanduser("~")
         )
         if not folder:
             return
@@ -1307,12 +1304,10 @@ class ExeFlow(tk.Tk):
         self.status_var.set(f"folder: {folder}")
 
     def _export(self):
-        path = filedialog.asksaveasfilename(
-            defaultextension=".exeflow",
-            filetypes=[("ExeFlow Playbook", "*.exeflow"),
-                       ("JSON", "*.json"), ("All", "*.*")],
-            initialdir=PLAYBOOKS_DIR or os.path.expanduser("~"),
-            initialfile=self.playbook.name.replace(" ", "_"),
+        path = easygui.filesavebox(
+            default=f"{self.playbook.name.replace(' ', '_')}.exeflow",
+            filetypes=["*.exeflow", "*.json"],
+            msg="Export Playbook"
         )
         if not path:
             return
@@ -1324,10 +1319,9 @@ class ExeFlow(tk.Tk):
             messagebox.showerror("Export Error", str(e))
 
     def _import(self):
-        path = filedialog.askopenfilename(
-            initialdir=PLAYBOOKS_DIR or os.path.expanduser("~"),
-            filetypes=[("ExeFlow Playbook", "*.exeflow"),
-                       ("JSON", "*.json"), ("All", "*.*")],
+        path = easygui.fileopenbox(
+            filetypes=["*.exeflow", "*.json"],
+            msg="Import Playbook"
         )
         if not path:
             return
