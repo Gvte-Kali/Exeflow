@@ -117,6 +117,23 @@ else
 fi
 
 # ─────────────────────────────────────────────
+#  DEPENDENCY: easygui
+# ─────────────────────────────────────────────
+
+if ! /usr/bin/python3 -c "import easygui" 2>/dev/null && ! python3 -c "import easygui" 2>/dev/null; then
+    info "easygui not found — installing..."
+    if command -v pip3 &>/dev/null; then
+        pip3 install easygui --break-system-packages -q || err "Failed to install easygui."
+    elif command -v pip &>/dev/null; then
+        pip install easygui --break-system-packages -q || err "Failed to install easygui."
+    else
+        err "pip not found. Install python3-pip first."
+    fi
+    ok "easygui installed"
+else
+    ok "easygui already present"
+fi
+# ─────────────────────────────────────────────
 #  DEPENDENCY: curl or wget
 # ─────────────────────────────────────────────
 
