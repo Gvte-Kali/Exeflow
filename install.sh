@@ -122,17 +122,25 @@ fi
 
 if ! /usr/bin/python3 -c "import easygui" 2>/dev/null && ! python3 -c "import easygui" 2>/dev/null; then
     info "easygui not found — installing..."
+    # Install python3-pip if missing
+    if ! command -v pip3 &>/dev/null && ! command -v pip &>/dev/null; then
+        info "pip not found — installing python3-pip..."
+        pkg_install "python3-pip" "python-pip" "python3-pip" "python3-pip" "py3-pip"
+        ok "python3-pip installed"
+    fi
+    # Now install easygui
     if command -v pip3 &>/dev/null; then
         pip3 install easygui --break-system-packages -q || err "Failed to install easygui."
     elif command -v pip &>/dev/null; then
         pip install easygui --break-system-packages -q || err "Failed to install easygui."
     else
-        err "pip not found. Install python3-pip first."
+        err "pip still not found after installation attempt."
     fi
     ok "easygui installed"
 else
     ok "easygui already present"
 fi
+
 # ─────────────────────────────────────────────
 #  DEPENDENCY: curl or wget
 # ─────────────────────────────────────────────
