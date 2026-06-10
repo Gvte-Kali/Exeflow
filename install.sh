@@ -110,6 +110,7 @@ if ! /usr/bin/python3 -c "import tkinter" 2>/dev/null && ! python3 -c "import tk
         "tk" \
         "python3-tkinter" \
         "python3-tk" \
+        "python3-pip" \
         "python3-tkinter"
     ok "python3-tk installed"
 else
