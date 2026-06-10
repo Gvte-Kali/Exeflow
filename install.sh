@@ -110,6 +110,7 @@ if ! /usr/bin/python3 -c "import tkinter" 2>/dev/null && ! python3 -c "import tk
         "tk" \
         "python3-tkinter" \
         "python3-tk" \
+        "python3-pip" \
         "python3-tkinter"
     ok "python3-tk installed"
 else
@@ -134,7 +135,7 @@ if ! /usr/bin/python3 -c "import easygui" 2>/dev/null && ! python3 -c "import ea
     elif command -v pip &>/dev/null; then
         pip install easygui --break-system-packages -q || err "Failed to install easygui."
     else
-        err "pip still not found after installation attempt."
+        err "pip not found. Install python3-pip first."
     fi
     ok "easygui installed"
 else
