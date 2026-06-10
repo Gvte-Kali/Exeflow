@@ -128,7 +128,9 @@ if ! /usr/bin/python3 -c "import easygui" 2>/dev/null && ! python3 -c "import ea
     elif command -v pip &>/dev/null; then
         pip install easygui --break-system-packages -q || err "Failed to install easygui."
     else
-        err "pip not found. Install python3-pip first."
+        err "pip not found. Installing python3-pip first."
+        pkg_install "python3-pip"
+        pip install easygui --break-system-packages -q || err "Failed to install easygui."
     fi
     ok "easygui installed"
 else
